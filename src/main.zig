@@ -284,10 +284,20 @@ fn cmdBacklogList(allocator: Allocator, io: Io, json_output: bool) !void {
         try out.writeAll("[");
         for (items, 0..) |item, idx| {
             if (idx > 0) try out.writeAll(",");
-            try out.print("{{\"checked\":{s},\"text\":\"{s}\"}}", .{
-                if (item.checked) "true" else "false",
-                item.text,
-            });
+            if (item.id) |id| {
+                var id_buf: [18]u8 = undefined;
+                const id_str = id.format(&id_buf);
+                try out.print("{{\"id\":\"{s}\",\"checked\":{s},\"text\":\"{s}\"}}", .{
+                    id_str,
+                    if (item.checked) "true" else "false",
+                    item.text,
+                });
+            } else {
+                try out.print("{{\"checked\":{s},\"text\":\"{s}\"}}", .{
+                    if (item.checked) "true" else "false",
+                    item.text,
+                });
+            }
         }
         try out.writeAll("]\n");
         try out.flush();
