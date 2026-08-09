@@ -164,3 +164,45 @@ test "parseEntries returns empty for no entries" {
     defer testing.allocator.free(entries);
     try testing.expectEqual(@as(usize, 0), entries.len);
 }
+
+/// Prepend content after the frontmatter of a daily note.
+/// If the note has frontmatter, inserts after the closing ---.
+/// If no frontmatter, prepends to the beginning.
+pub fn prependContent(allocator: Allocator, content: []const u8, new_content: []const u8) Allocator.Error![]const u8 {
+    const frontmatter = @import("frontmatter.zig");
+    if (frontmatter.extract(content)) |ext| {
+        // Rebuild: frontmatter + new_content + original body
+        return std.fmt.allocPrint(allocator, "---\n{s}\n---\n\n{s}{s}", .{
+            ext.frontmatter_raw,
+            new_content,
+            ext.body,
+        });
+    }
+    // No frontmatter, prepend directly
+    return std.fmt.allocPrint(allocator, "{s}{s}", .{ new_content, content });
+}
+
+test "prependContent with frontmatter inserts after ---" {
+    const content =
+        \\---
+        \\date: 2026-08-09
+        \\---
+        \\
+        \\- 14:00 -- Existing entry
+    ;
+    const result = try prependContent(testing.allocator, content, "- 13:00 -- New entry\n");
+    defer testing.allocator.free(result);
+    // Frontmatter should still be first
+    try testing.expect(std.mem.startsWith(u8, result, "---\n"));
+    // New entry should come before old entry
+    const new_pos = std.mem.indexOf(u8, result, "New entry").?;
+    const old_pos = std.mem.indexOf(u8, result, "Existing entry").?;
+    try testing.expect(new_pos < old_pos);
+}
+
+test "prependContent without frontmatter prepends directly" {
+    const content = "- 14:00 -- Existing\n";
+    const result = try prependContent(testing.allocator, content, "- 13:00 -- New\n");
+    defer testing.allocator.free(result);
+    try testing.expect(std.mem.startsWith(u8, result, "- 13:00 -- New\n"));
+}

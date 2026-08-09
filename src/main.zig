@@ -58,6 +58,12 @@ pub fn main(init: std.process.Init) !void {
         try cmdDashboard(arena, io, json_output);
     } else if (std.mem.eql(u8, command, "relocate")) {
         try cmdRelocate(arena, io, cmd_args[2..], json_output);
+    } else if (std.mem.eql(u8, command, "adr")) {
+        try cmdAdr(arena, io, cmd_args[2..], json_output);
+    } else if (std.mem.eql(u8, command, "note")) {
+        try cmdNote(arena, io, cmd_args[2..], json_output);
+    } else if (std.mem.eql(u8, command, "search")) {
+        try cmdSearch(arena, io, cmd_args[2..], json_output);
     } else {
         try printError(io, "unknown command", command);
         try printUsage(io);
@@ -79,13 +85,24 @@ fn printUsage(io: Io) !void {
         \\    list [--all]              List backlog items
         \\    add <text> [--priority]   Add a backlog item
         \\    done <id>                 Mark item done
+        \\    reorder <id> [id...]      Move items to top in order
+        \\    prioritise <id> <pos>     Move item to specific position
         \\  daily <subcommand>          Manage daily notes
         \\    show                      Show today's daily note
         \\    append <text>             Append timestamped entry
+        \\    prepend <text>            Prepend entry (after frontmatter)
         \\  session <subcommand>        Session notes
         \\    create <topic>            Create session note from today's entries
+        \\    list                      List all session notes
         \\  project <subcommand>        Project management
         \\    overview                  Show project overview
+        \\    summary                   Show project activity summary
+        \\  adr <subcommand>            Architecture Decision Records
+        \\    create <title>            Create a new ADR (auto-numbered)
+        \\    list                      List all ADRs
+        \\  note <subcommand>           Generic notes
+        \\    create <title> [tags...]  Create a tagged note
+        \\  search <query>              Full-text search across journal
         \\  dashboard                   Cross-project overview
         \\  relocate [path]             Fix moved journal path
         \\  help                        Show this help
@@ -195,6 +212,22 @@ fn cmdBacklog(allocator: Allocator, io: Io, args: []const []const u8, json_outpu
             return;
         }
         try cmdBacklogDone(allocator, io, args[1], json_output);
+    } else if (std.mem.eql(u8, sub, "reorder")) {
+        if (args.len < 2) {
+            try printError(io, "backlog reorder", "missing item IDs");
+            return;
+        }
+        try cmdBacklogReorder(allocator, io, args[1..], json_output);
+    } else if (std.mem.eql(u8, sub, "prioritise") or std.mem.eql(u8, sub, "prioritize")) {
+        if (args.len < 3) {
+            try printError(io, "backlog prioritise", "usage: prioritise <id> <position>");
+            return;
+        }
+        const pos = std.fmt.parseInt(usize, args[2], 10) catch {
+            try printError(io, "backlog prioritise", "position must be a number");
+            return;
+        };
+        try cmdBacklogPrioritise(allocator, io, args[1], pos, json_output);
     } else {
         try printError(io, "backlog", "unknown subcommand");
     }
@@ -385,8 +418,12 @@ fn cmdDaily(allocator: Allocator, io: Io, args: []const []const u8, json_output:
             try printError(io, "daily append", "missing text");
             return;
         }
-        try cmdDailyAppend(allocator, io, args[1], json_output);
-    } else {
+        try cmdDailyAppend(allocator, io, args[1], json_output);    } else if (std.mem.eql(u8, sub, "prepend")) {
+        if (args.len < 2) {
+            try printError(io, "daily prepend", "missing text");
+            return;
+        }
+        try cmdDailyPrepend(allocator, io, args[1], json_output);    } else {
         try printError(io, "daily", "unknown subcommand");
     }
 }
@@ -476,8 +513,8 @@ fn cmdSession(allocator: Allocator, io: Io, args: []const []const u8, json_outpu
             try printError(io, "session create", "missing topic");
             return;
         }
-        try cmdSessionCreate(allocator, io, args[1], json_output);
-    } else {
+        try cmdSessionCreate(allocator, io, args[1], json_output);    } else if (std.mem.eql(u8, sub, "list")) {
+        try cmdSessionList(allocator, io, json_output);    } else {
         try printError(io, "session", "unknown subcommand");
     }
 }
@@ -538,8 +575,8 @@ fn cmdProject(allocator: Allocator, io: Io, args: []const []const u8, json_outpu
     const sub = args[0];
 
     if (std.mem.eql(u8, sub, "overview")) {
-        try cmdProjectOverview(allocator, io, json_output);
-    } else {
+        try cmdProjectOverview(allocator, io, json_output);    } else if (std.mem.eql(u8, sub, "summary")) {
+        try cmdProjectSummary(allocator, io, json_output);    } else {
         try printError(io, "project", "unknown subcommand");
     }
 }
@@ -687,4 +724,470 @@ fn cmdRelocate(allocator: Allocator, io: Io, args: []const []const u8, json_outp
         try out.print("Journal path updated to: {s}\n", .{new_path});
     }
     try out.flush();
+}
+
+// ==================== v0.2 Commands ====================
+
+fn cmdBacklogReorder(allocator: Allocator, io: Io, id_list: []const []const u8, json_output: bool) !void {
+    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch {
+        try printError(io, "backlog reorder", "journal/backlog.md not found.");
+        return;
+    };
+    defer read.deinit();
+
+    const new_content = core.backlog.reorder(allocator, read.content, id_list) catch {
+        try printError(io, "backlog reorder", "failed to reorder");
+        return;
+    };
+    defer allocator.free(new_content);
+
+    try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+
+    var buf: [1024]u8 = undefined;
+    var w = Io.File.writer(.stdout(), io, &buf);
+    const out = &w.interface;
+    if (json_output) {
+        try out.print("{{\"status\":\"ok\",\"reordered\":{d}}}\n", .{id_list.len});
+    } else {
+        try out.print("Reordered {d} items to top\n", .{id_list.len});
+    }
+    try out.flush();
+}
+
+fn cmdBacklogPrioritise(allocator: Allocator, io: Io, id_str: []const u8, position: usize, json_output: bool) !void {
+    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch {
+        try printError(io, "backlog prioritise", "journal/backlog.md not found.");
+        return;
+    };
+    defer read.deinit();
+
+    const new_content = core.backlog.prioritise(allocator, read.content, id_str, position) catch |err| {
+        if (err == error.ItemNotFound) {
+            try printError(io, "backlog prioritise", "item not found");
+            return;
+        }
+        return err;
+    };
+    defer allocator.free(new_content);
+
+    try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+
+    var buf: [1024]u8 = undefined;
+    var w = Io.File.writer(.stdout(), io, &buf);
+    const out = &w.interface;
+    if (json_output) {
+        try out.print("{{\"status\":\"ok\",\"id\":\"{s}\",\"position\":{d}}}\n", .{ id_str, position });
+    } else {
+        try out.print("Moved {s} to position {d}\n", .{ id_str, position });
+    }
+    try out.flush();
+}
+
+fn cmdDailyPrepend(allocator: Allocator, io: Io, text: []const u8, json_output: bool) !void {
+    const path = try todayFilename(allocator, io);
+    defer allocator.free(path);
+
+    const time_str = try todayTimeHM(io, allocator);
+    defer allocator.free(time_str);
+
+    const entry = try core.daily.buildEntry(allocator, time_str, text);
+    defer allocator.free(entry);
+
+    var existing_content: []const u8 = "";
+    var mtime_guard: ?Io.Timestamp = null;
+    var read_owned = false;
+    if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, path)) |read| {
+        existing_content = read.content;
+        mtime_guard = read.mtime;
+        read_owned = true;
+    } else |_| {}
+
+    const new_content = try core.daily.prependContent(allocator, existing_content, entry);
+    defer allocator.free(new_content);
+
+    if (read_owned) allocator.free(existing_content);
+
+    io_mod.ensureDir(Io.Dir.cwd(), io, "journal/daily") catch {};
+    try io_mod.writeToDir(Io.Dir.cwd(), io, path, new_content, mtime_guard);
+
+    var buf: [1024]u8 = undefined;
+    var w = Io.File.writer(.stdout(), io, &buf);
+    const out = &w.interface;
+    if (json_output) {
+        try out.print("{{\"status\":\"ok\",\"entry\":\"{s}\"}}\n", .{entry});
+    } else {
+        try out.print("Prepended: {s}", .{entry});
+    }
+    try out.flush();
+}
+
+fn cmdSessionList(allocator: Allocator, io: Io, json_output: bool) !void {
+    // List files in journal/sessions/
+    var dir = Io.Dir.cwd().openDir(io, "journal/sessions", .{ .iterate = true }) catch {
+        try printError(io, "session list", "journal/sessions/ not found.");
+        return;
+    };
+    defer dir.close(io);
+
+    var filenames = std.ArrayListUnmanaged([]const u8).empty;
+    defer {
+        for (filenames.items) |f| allocator.free(f);
+        filenames.deinit(allocator);
+    }
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        if (std.mem.endsWith(u8, entry.name, ".md")) {
+            try filenames.append(allocator, try allocator.dupe(u8, entry.name));
+        }
+    }
+
+    const summaries = try core.session.parseSessionFilenames(allocator, filenames.items);
+    defer allocator.free(summaries);
+
+    // Sort by date
+    std.mem.sort(core.session.SessionSummary, summaries, {}, struct {
+        fn lessThan(_: void, a: core.session.SessionSummary, b: core.session.SessionSummary) bool {
+            return std.mem.lessThan(u8, a.date, b.date);
+        }
+    }.lessThan);
+
+    var buf: [4096]u8 = undefined;
+    var w = Io.File.writer(.stdout(), io, &buf);
+    const out = &w.interface;
+
+    if (json_output) {
+        try out.writeAll("[");
+        for (summaries, 0..) |s, i| {
+            if (i > 0) try out.writeAll(",");
+            try out.print("{{\"date\":\"{s}\",\"topic\":\"{s}\"}}", .{ s.date, s.topic });
+        }
+        try out.writeAll("]\n");
+    } else {
+        if (summaries.len == 0) {
+            try out.writeAll("No session notes found.\n");
+        } else {
+            for (summaries) |s| {
+                try out.print("{s} {s}\n", .{ s.date, s.topic });
+            }
+        }
+    }
+    try out.flush();
+}
+
+fn cmdProjectSummary(allocator: Allocator, io: Io, json_output: bool) !void {
+    // Read session filenames
+    var dir = Io.Dir.cwd().openDir(io, "journal/sessions", .{ .iterate = true }) catch {
+        try printError(io, "project summary", "journal/sessions/ not found.");
+        return;
+    };
+    defer dir.close(io);
+
+    var dates = std.ArrayListUnmanaged([]const u8).empty;
+    defer {
+        for (dates.items) |d| allocator.free(d);
+        dates.deinit(allocator);
+    }
+    var topics = std.ArrayListUnmanaged([]const u8).empty;
+    defer {
+        for (topics.items) |t| allocator.free(t);
+        topics.deinit(allocator);
+    }
+    var counts = std.ArrayListUnmanaged(usize).empty;
+    defer counts.deinit(allocator);
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        if (core.session.parseSessionFilename(entry.name)) |summary| {
+            try dates.append(allocator, try allocator.dupe(u8, summary.date));
+            try topics.append(allocator, try allocator.dupe(u8, summary.topic));
+            try counts.append(allocator, 0); // entry count unknown without reading file
+        }
+    }
+
+    const summary = try core.project.buildSummary(allocator, dates.items, topics.items, counts.items);
+    defer allocator.free(summary.sessions);
+
+    var buf: [4096]u8 = undefined;
+    var w = Io.File.writer(.stdout(), io, &buf);
+    const out = &w.interface;
+
+    if (json_output) {
+        try out.print("{{\"session_count\":{d},\"total_entries\":{d}}}\n", .{ summary.session_count, summary.total_entries });
+    } else {
+        try out.print("Sessions: {d}\n", .{summary.session_count});
+        for (summary.sessions) |s| {
+            try out.print("  {s} {s}\n", .{ s.date, s.topic });
+        }
+    }
+    try out.flush();
+}
+
+fn cmdAdr(allocator: Allocator, io: Io, args: []const []const u8, json_output: bool) !void {
+    if (args.len == 0) {
+        try printError(io, "adr", "missing subcommand (create, list)");
+        return;
+    }
+
+    const sub = args[0];
+
+    if (std.mem.eql(u8, sub, "create")) {
+        if (args.len < 2) {
+            try printError(io, "adr create", "missing title");
+            return;
+        }
+        try cmdAdrCreate(allocator, io, args[1], json_output);
+    } else if (std.mem.eql(u8, sub, "list")) {
+        try cmdAdrList(allocator, io, json_output);
+    } else {
+        try printError(io, "adr", "unknown subcommand");
+    }
+}
+
+fn cmdAdrCreate(allocator: Allocator, io: Io, title: []const u8, json_output: bool) !void {
+    io_mod.ensureDir(Io.Dir.cwd(), io, "journal/adr") catch {};
+
+    // Scan existing ADR files to find next number
+    var dir = Io.Dir.cwd().openDir(io, "journal/adr", .{ .iterate = true }) catch {
+        try printError(io, "adr create", "cannot open journal/adr/");
+        return;
+    };
+    defer dir.close(io);
+
+    var filenames = std.ArrayListUnmanaged([]const u8).empty;
+    defer {
+        for (filenames.items) |f| allocator.free(f);
+        filenames.deinit(allocator);
+    }
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        try filenames.append(allocator, try allocator.dupe(u8, entry.name));
+    }
+
+    const next_num = core.adr.nextNumber(filenames.items);
+
+    const date = todayDate(io);
+    const adr_content = core.adr.build(
+        allocator,
+        next_num,
+        title,
+        "proposed",
+        date,
+        null,
+        "(TODO: describe the context)",
+        "(TODO: describe the decision)",
+        null,
+    ) catch {
+        try printError(io, "adr create", "failed to build ADR");
+        return;
+    };
+    defer allocator.free(adr_content);
+
+    var fname_buf: [12]u8 = undefined;
+    const fname = core.adr.formatFilename(next_num, &fname_buf);
+    const full_path = try std.fmt.allocPrint(allocator, "journal/adr/{s}", .{fname});
+    defer allocator.free(full_path);
+
+    try io_mod.writeToDir(Io.Dir.cwd(), io, full_path, adr_content, null);
+
+    var buf: [1024]u8 = undefined;
+    var w = Io.File.writer(.stdout(), io, &buf);
+    const out = &w.interface;
+    if (json_output) {
+        try out.print("{{\"status\":\"ok\",\"number\":{d},\"path\":\"{s}\"}}\n", .{ next_num, full_path });
+    } else {
+        try out.print("Created ADR-{d:0>3}: {s}\n", .{ next_num, title });
+    }
+    try out.flush();
+}
+
+fn cmdAdrList(allocator: Allocator, io: Io, json_output: bool) !void {
+    var dir = Io.Dir.cwd().openDir(io, "journal/adr", .{ .iterate = true }) catch {
+        try printError(io, "adr list", "journal/adr/ not found.");
+        return;
+    };
+    defer dir.close(io);
+
+    var filenames = std.ArrayListUnmanaged([]const u8).empty;
+    defer {
+        for (filenames.items) |f| allocator.free(f);
+        filenames.deinit(allocator);
+    }
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        if (core.adr.parseFilenameNumber(entry.name) != null) {
+            try filenames.append(allocator, try allocator.dupe(u8, entry.name));
+        }
+    }
+
+    // Sort by number
+    std.mem.sort([]const u8, filenames.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            const na = core.adr.parseFilenameNumber(a) orelse 0;
+            const nb = core.adr.parseFilenameNumber(b) orelse 0;
+            return na < nb;
+        }
+    }.lessThan);
+
+    var buf: [4096]u8 = undefined;
+    var w = Io.File.writer(.stdout(), io, &buf);
+    const out = &w.interface;
+
+    if (json_output) {
+        try out.writeAll("[");
+        for (filenames.items, 0..) |f, i| {
+            if (i > 0) try out.writeAll(",");
+            try out.print("\"{s}\"", .{f});
+        }
+        try out.writeAll("]\n");
+    } else {
+        if (filenames.items.len == 0) {
+            try out.writeAll("No ADRs found.\n");
+        } else {
+            for (filenames.items) |f| {
+                try out.print("{s}\n", .{f});
+            }
+        }
+    }
+    try out.flush();
+}
+
+fn cmdNote(allocator: Allocator, io: Io, args: []const []const u8, json_output: bool) !void {
+    if (args.len == 0) {
+        try printError(io, "note", "missing subcommand (create)");
+        return;
+    }
+
+    const sub = args[0];
+
+    if (std.mem.eql(u8, sub, "create")) {
+        if (args.len < 2) {
+            try printError(io, "note create", "missing title");
+            return;
+        }
+        // Remaining args are tags
+        const tags = if (args.len > 2) args[2..] else null;
+        try cmdNoteCreate(allocator, io, args[1], tags, json_output);
+    } else {
+        try printError(io, "note", "unknown subcommand");
+    }
+}
+
+fn cmdNoteCreate(allocator: Allocator, io: Io, title: []const u8, tags: ?[]const []const u8, json_output: bool) !void {
+    io_mod.ensureDir(Io.Dir.cwd(), io, "journal/notes") catch {};
+
+    const date = todayDate(io);
+    var date_buf: [10]u8 = undefined;
+    const date_str = std.fmt.bufPrint(&date_buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+        date.year, date.month, date.day,
+    }) catch unreachable;
+
+    const note_content = core.note.build(
+        allocator,
+        title,
+        tags,
+        date_str,
+        "(TODO: write your note here)",
+    ) catch {
+        try printError(io, "note create", "failed to build note");
+        return;
+    };
+    defer allocator.free(note_content);
+
+    // Sanitize title for filename
+    var fname_buf: [128]u8 = undefined;
+    const fname = std.fmt.bufPrint(&fname_buf, "{s}.md", .{title}) catch {
+        try printError(io, "note create", "title too long for filename");
+        return;
+    };
+
+    const full_path = try std.fmt.allocPrint(allocator, "journal/notes/{s}", .{fname});
+    defer allocator.free(full_path);
+
+    try io_mod.writeToDir(Io.Dir.cwd(), io, full_path, note_content, null);
+
+    var buf: [1024]u8 = undefined;
+    var w = Io.File.writer(.stdout(), io, &buf);
+    const out = &w.interface;
+    if (json_output) {
+        try out.print("{{\"status\":\"ok\",\"path\":\"{s}\"}}\n", .{full_path});
+    } else {
+        try out.print("Created: {s}\n", .{full_path});
+    }
+    try out.flush();
+}
+
+fn cmdSearch(allocator: Allocator, io: Io, args: []const []const u8, json_output: bool) !void {
+    if (args.len == 0) {
+        try printError(io, "search", "missing query");
+        return;
+    }
+
+    const query = args[0];
+
+    // Search all markdown files in journal/
+    var all_matches = std.ArrayListUnmanaged(core.search.Match).empty;
+    defer {
+        for (all_matches.items) |m| {
+            allocator.free(m.file);
+            allocator.free(m.line);
+        }
+        all_matches.deinit(allocator);
+    }
+
+    try searchDir(allocator, io, "journal", query, &all_matches);
+
+    var buf: [8192]u8 = undefined;
+    var w = Io.File.writer(.stdout(), io, &buf);
+    const out = &w.interface;
+
+    if (json_output) {
+        try out.writeAll("[");
+        for (all_matches.items, 0..) |m, i| {
+            if (i > 0) try out.writeAll(",");
+            try out.print("{{\"file\":\"{s}\",\"line\":{d},\"text\":\"{s}\"}}", .{ m.file, m.line_number, m.line });
+        }
+        try out.writeAll("]\n");
+    } else {
+        if (all_matches.items.len == 0) {
+            try out.print("No matches for \"{s}\".\n", .{query});
+        } else {
+            for (all_matches.items) |m| {
+                try out.print("{s}:{d}: {s}\n", .{ m.file, m.line_number, m.line });
+            }
+        }
+    }
+    try out.flush();
+}
+
+fn searchDir(allocator: Allocator, io: Io, dir_path: []const u8, query: []const u8, results: *std.ArrayListUnmanaged(core.search.Match)) !void {
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, entry.name });
+        defer allocator.free(full_path);
+
+        if (entry.kind == .directory) {
+            try searchDir(allocator, io, full_path, query, results);
+        } else if (std.mem.endsWith(u8, entry.name, ".md")) {
+            const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, full_path) catch continue;
+            defer read.deinit();
+
+            const matches = core.search.searchContent(allocator, read.content, query, full_path) catch continue;
+            defer allocator.free(matches);
+
+            for (matches) |m| {
+                try results.append(allocator, .{
+                    .file = try allocator.dupe(u8, m.file),
+                    .line_number = m.line_number,
+                    .line = try allocator.dupe(u8, m.line),
+                    .match_start = m.match_start,
+                });
+            }
+        }
+    }
 }

@@ -255,6 +255,195 @@ pub fn markDone(
     return try result.toOwnedSlice(allocator);
 }
 
+/// Reorder backlog items by moving items matching the given IDs to the top,
+/// in the order given. Items not in the id_list retain their relative order below.
+/// Returns a new string with reordered content. Caller owns the memory.
+pub fn reorder(
+    allocator: Allocator,
+    content: []const u8,
+    id_list: []const []const u8,
+) Allocator.Error![]const u8 {
+    // Parse all lines into items and non-items
+    const LineInfo = struct {
+        line: []const u8,
+        item: ?BacklogItem,
+    };
+
+    var all_lines = std.ArrayListUnmanaged(LineInfo).empty;
+    defer all_lines.deinit(allocator);
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        try all_lines.append(allocator, .{
+            .line = line,
+            .item = parseItemLine(trimmed),
+        });
+    }
+
+    // Find items matching id_list in order
+    var matched_indices = std.ArrayListUnmanaged(usize).empty;
+    defer matched_indices.deinit(allocator);
+
+    for (id_list) |target_id_str| {
+        const target_id = ids.parse(target_id_str);
+        for (all_lines.items, 0..) |li, idx| {
+            if (li.item) |item| {
+                const matches = blk: {
+                    if (item.id != null and target_id != null) {
+                        break :blk item.id.?.eql(target_id.?);
+                    }
+                    break :blk std.mem.indexOf(u8, li.line, target_id_str) != null;
+                };
+                if (matches) {
+                    try matched_indices.append(allocator, idx);
+                    break;
+                }
+            }
+        }
+    }
+
+    // Build output: non-item lines stay in place contextually,
+    // matched items come first, then remaining items in original order
+    var result = std.ArrayListUnmanaged(u8).empty;
+    errdefer result.deinit(allocator);
+
+    // First pass: write non-item header lines (before first item)
+    var first_item_idx: ?usize = null;
+    for (all_lines.items, 0..) |li, idx| {
+        if (li.item != null) {
+            first_item_idx = idx;
+            break;
+        }
+        if (result.items.len > 0) try result.append(allocator, '\n');
+        try result.appendSlice(allocator, li.line);
+    }
+
+    // Second pass: write matched items
+    for (matched_indices.items) |mi| {
+        if (result.items.len > 0) try result.append(allocator, '\n');
+        try result.appendSlice(allocator, all_lines.items[mi].line);
+    }
+
+    // Third pass: write remaining items (not matched, not done)
+    for (all_lines.items, 0..) |li, idx| {
+        if (li.item == null) continue;
+        if (first_item_idx != null and idx < first_item_idx.?) continue;
+
+        var is_matched = false;
+        for (matched_indices.items) |mi| {
+            if (mi == idx) {
+                is_matched = true;
+                break;
+            }
+        }
+        if (is_matched) continue;
+
+        try result.append(allocator, '\n');
+        try result.appendSlice(allocator, li.line);
+    }
+
+    // Fourth pass: write trailing non-item lines (archive, etc.)
+    if (first_item_idx) |fi| {
+        var last_item_idx = fi;
+        for (all_lines.items, 0..) |li, idx| {
+            if (li.item != null) last_item_idx = idx;
+        }
+        for (all_lines.items[last_item_idx + 1 ..]) |li| {
+            if (li.item == null) {
+                try result.append(allocator, '\n');
+                try result.appendSlice(allocator, li.line);
+            }
+        }
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
+/// Move a single item to a specific position (1-indexed) among open items.
+/// Position 1 is the top of the backlog.
+pub fn prioritise(
+    allocator: Allocator,
+    content: []const u8,
+    id_str: []const u8,
+    position: usize,
+) (Allocator.Error || error{ItemNotFound})![]const u8 {
+    // Find the item
+    const target_id = ids.parse(id_str);
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    var found_idx: ?usize = null;
+    var idx: usize = 0;
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (parseItemLine(trimmed)) |item| {
+            if (!item.checked) {
+                const matches = blk: {
+                    if (item.id != null and target_id != null) {
+                        break :blk item.id.?.eql(target_id.?);
+                    }
+                    break :blk std.mem.indexOf(u8, trimmed, id_str) != null;
+                };
+                if (matches) {
+                    found_idx = idx;
+                    break;
+                }
+            }
+        }
+        idx += 1;
+    }
+
+    if (found_idx == null) return error.ItemNotFound;
+
+    // Build a single-element id_list and reorder
+    const single = [_][]const u8{id_str};
+
+    // If position > 1, we need to put other items first
+    if (position <= 1) {
+        return reorder(allocator, content, &single);
+    }
+
+    // For position > 1, reorder with the target at the end of the first N items
+    // Simple approach: collect open item IDs, insert target at position, reorder
+    var open_ids = std.ArrayListUnmanaged([]const u8).empty;
+    defer open_ids.deinit(allocator);
+
+    lines = std.mem.splitScalar(u8, content, '\n');
+    var found_already = false;
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (parseItemLine(trimmed)) |item| {
+            if (!item.checked) {
+                const is_target = blk: {
+                    if (item.id != null and target_id != null) {
+                        break :blk item.id.?.eql(target_id.?);
+                    }
+                    break :blk std.mem.indexOf(u8, trimmed, id_str) != null;
+                };
+                if (is_target and !found_already) {
+                    found_already = true;
+                    continue; // skip, we'll insert at position
+                }
+                if (item.id) |id| {
+                    var id_buf: [18]u8 = undefined;
+                    const id_s = id.format(&id_buf);
+                    // Need to dupe since format uses stack buffer
+                    const duped = allocator.dupe(u8, id_s) catch return error.OutOfMemory;
+                    try open_ids.append(allocator, duped);
+                }
+            }
+        }
+    }
+    defer for (open_ids.items) |s| allocator.free(s);
+
+    // Insert target at position (must dupe since id_str is borrowed)
+    const target_duped = allocator.dupe(u8, id_str) catch return error.OutOfMemory;
+    const insert_pos = if (position - 1 > open_ids.items.len) open_ids.items.len else position - 1;
+    try open_ids.insert(allocator, insert_pos, target_duped);
+
+    return reorder(allocator, content, open_ids.items);
+}
+
 // ==================== TESTS ====================
 
 test "parseItemLine with ID and priority" {

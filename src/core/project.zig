@@ -175,3 +175,61 @@ test "roundtrip: build then parse" {
     try testing.expectEqualStrings("Zig", parsed_tech[0]);
     try testing.expectEqualStrings("Shell", parsed_tech[1]);
 }
+
+/// Summary of project activity.
+pub const ProjectSummary = struct {
+    session_count: usize,
+    total_entries: usize,
+    sessions: []const SessionActivity,
+
+    pub const SessionActivity = struct {
+        date: []const u8,
+        topic: []const u8,
+        entry_count: usize,
+    };
+};
+
+/// Build a project summary from session filenames and their entry counts.
+/// Filenames should be session-formatted: "YYYY-MM-DD Topic.md"
+/// Each entry_count corresponds to the number of daily entries for that session.
+pub fn buildSummary(
+    allocator: Allocator,
+    session_dates: []const []const u8,
+    session_topics: []const []const u8,
+    session_entry_counts: []const usize,
+) Allocator.Error!ProjectSummary {
+    var total: usize = 0;
+    for (session_entry_counts) |c| total += c;
+
+    var activities = std.ArrayListUnmanaged(ProjectSummary.SessionActivity).empty;
+    errdefer activities.deinit(allocator);
+
+    for (session_dates, session_topics, session_entry_counts) |date, topic, count| {
+        try activities.append(allocator, .{
+            .date = date,
+            .topic = topic,
+            .entry_count = count,
+        });
+    }
+
+    return ProjectSummary{
+        .session_count = session_dates.len,
+        .total_entries = total,
+        .sessions = try activities.toOwnedSlice(allocator),
+    };
+}
+
+test "buildSummary aggregates session data" {
+    const dates = [_][]const u8{ "2026-08-08", "2026-08-09" };
+    const topics = [_][]const u8{ "Setup", "Build backlog" };
+    const counts = [_]usize{ 3, 5 };
+
+    const summary = try buildSummary(testing.allocator, &dates, &topics, &counts);
+    defer testing.allocator.free(summary.sessions);
+
+    try testing.expectEqual(@as(usize, 2), summary.session_count);
+    try testing.expectEqual(@as(usize, 8), summary.total_entries);
+    try testing.expectEqualStrings("Setup", summary.sessions[0].topic);
+    try testing.expectEqualStrings("Build backlog", summary.sessions[1].topic);
+    try testing.expectEqual(@as(usize, 5), summary.sessions[1].entry_count);
+}
