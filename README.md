@@ -58,27 +58,27 @@ devjournal dashboard
 
 ## Commands
 
-| Command | Description |
-|---|---|
-| `init [--project <name>]` | Initialize journal structure |
-| `backlog list` | List open backlog items |
-| `backlog add <text>` | Add a backlog item (auto-generated ID) |
-| `backlog done <id>` | Mark item done with timestamp |
-| `backlog reorder <id> [id...]` | Move items to top in order |
-| `backlog prioritise <id> <pos>` | Move item to specific position |
-| `daily show` | Show today's daily note |
-| `daily append <text>` | Append timestamped entry |
-| `daily prepend <text>` | Prepend entry (after frontmatter) |
-| `session create <topic>` | Create session note from today's entries |
-| `session list` | List all session notes |
-| `project overview` | Show project metadata |
-| `project summary` | Show activity summary |
-| `adr create <title>` | Create auto-numbered ADR |
-| `adr list` | List all ADRs |
-| `note create <title> [tags...]` | Create a tagged note |
-| `search <query>` | Full-text search across journal |
-| `dashboard` | Cross-project overview |
-| `relocate [path]` | Fix moved journal path |
+| Command                         | Description                              |
+| ------------------------------- | ---------------------------------------- |
+| `init [--project <name>]`       | Initialize journal structure             |
+| `backlog list`                  | List open backlog items                  |
+| `backlog add <text>`            | Add a backlog item (auto-generated ID)   |
+| `backlog done <id>`             | Mark item done with timestamp            |
+| `backlog reorder <id> [id...]`  | Move items to top in order               |
+| `backlog prioritise <id> <pos>` | Move item to specific position           |
+| `daily show`                    | Show today's daily note                  |
+| `daily append <text>`           | Append timestamped entry                 |
+| `daily prepend <text>`          | Prepend entry (after frontmatter)        |
+| `session create <topic>`        | Create session note from today's entries |
+| `session list`                  | List all session notes                   |
+| `project overview`              | Show project metadata                    |
+| `project summary`               | Show activity summary                    |
+| `adr create <title>`            | Create auto-numbered ADR                 |
+| `adr list`                      | List all ADRs                            |
+| `note create <title> [tags...]` | Create a tagged note                     |
+| `search <query>`                | Full-text search across journal          |
+| `dashboard`                     | Cross-project overview                   |
+| `relocate [path]`               | Fix moved journal path                   |
 
 ## Global Options
 

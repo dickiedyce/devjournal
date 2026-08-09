@@ -1290,7 +1290,7 @@ fn handleMcpRequest(allocator: Allocator, io: Io, request: mcp.Request, tools: *
     return mcp.buildErrorResponse(allocator, request.id, -32601, "Method not found");
 }
 
-const TOOLS_COUNT = 11;
+const TOOLS_COUNT = 23;
 
 fn getTools() [TOOLS_COUNT]mcp.Tool {
     return [_]mcp.Tool{
@@ -1298,6 +1298,36 @@ fn getTools() [TOOLS_COUNT]mcp.Tool {
             .name = "devjournal_init",
             .description = "Initialize a new journal structure with project overview and backlog",
             .input_schema_json = "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\",\"description\":\"Project name\"}}}",
+        },
+        .{
+            .name = "devjournal_project_list",
+            .description = "List all projects in the journal",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{}}",
+        },
+        .{
+            .name = "devjournal_project_create",
+            .description = "Create a new project with overview.md and backlog.md",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\",\"description\":\"Project name\"},\"description\":{\"type\":\"string\",\"description\":\"Project description\"},\"repo\":{\"type\":\"string\",\"description\":\"Repository (owner/repo)\"},\"tech\":{\"type\":\"string\",\"description\":\"Tech stack\"}},\"required\":[\"project\"]}",
+        },
+        .{
+            .name = "devjournal_project_overview",
+            .description = "Show project overview metadata (description, status, repo, tech)",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{}}",
+        },
+        .{
+            .name = "devjournal_project_context",
+            .description = "Load full project context: overview, recent sessions, and open backlog items. Use this at the start of a session.",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{}}",
+        },
+        .{
+            .name = "devjournal_project_summary",
+            .description = "Show project activity summary (session count, total entries)",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{}}",
+        },
+        .{
+            .name = "devjournal_backlog_read",
+            .description = "Read raw backlog content (all items including done)",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{}}",
         },
         .{
             .name = "devjournal_backlog_list",
@@ -1315,8 +1345,28 @@ fn getTools() [TOOLS_COUNT]mcp.Tool {
             .input_schema_json = "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Item ID like [#20260809-xxxx]\"}},\"required\":[\"id\"]}",
         },
         .{
+            .name = "devjournal_backlog_reorder",
+            .description = "Reorder backlog items by moving given IDs to the top in order",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Item IDs in desired order\"}},\"required\":[\"ids\"]}",
+        },
+        .{
+            .name = "devjournal_backlog_prioritise",
+            .description = "Move a backlog item to a specific position (1 = top)",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Item ID\"},\"position\":{\"type\":\"integer\",\"description\":\"Target position (1-indexed)\"}},\"required\":[\"id\",\"position\"]}",
+        },
+        .{
+            .name = "devjournal_toggle_task",
+            .description = "Toggle a backlog item's checkbox (checked <-> unchecked). Use for non-backlog tasks like review findings or debug hypotheses.",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Item ID or text substring\"}},\"required\":[\"id\"]}",
+        },
+        .{
             .name = "devjournal_daily_show",
             .description = "Show today's daily note content",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{}}",
+        },
+        .{
+            .name = "devjournal_daily_read",
+            .description = "Read today's daily note content (alias of daily_show)",
             .input_schema_json = "{\"type\":\"object\",\"properties\":{}}",
         },
         .{
@@ -1325,24 +1375,34 @@ fn getTools() [TOOLS_COUNT]mcp.Tool {
             .input_schema_json = "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"Entry text\"}},\"required\":[\"text\"]}",
         },
         .{
+            .name = "devjournal_daily_prepend",
+            .description = "Prepend an entry to today's daily note (after frontmatter)",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"Entry text\"}},\"required\":[\"text\"]}",
+        },
+        .{
             .name = "devjournal_session_create",
             .description = "Create a session note from today's daily entries",
             .input_schema_json = "{\"type\":\"object\",\"properties\":{\"topic\":{\"type\":\"string\",\"description\":\"Session topic\"}},\"required\":[\"topic\"]}",
         },
         .{
-            .name = "devjournal_project_overview",
-            .description = "Show project overview metadata",
+            .name = "devjournal_session_list",
+            .description = "List all session notes sorted by date",
             .input_schema_json = "{\"type\":\"object\",\"properties\":{}}",
         },
         .{
-            .name = "devjournal_dashboard",
-            .description = "Show cross-project dashboard summary",
-            .input_schema_json = "{\"type\":\"object\",\"properties\":{}}",
+            .name = "devjournal_create_note",
+            .description = "Create a generic note with optional tags. For ADRs, TILs, debug logs, code reviews.",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\",\"description\":\"Note title\"},\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Tags for the note\"},\"body\":{\"type\":\"string\",\"description\":\"Note body content\"}},\"required\":[\"title\"]}",
         },
         .{
             .name = "devjournal_adr_create",
             .description = "Create a new Architecture Decision Record (auto-numbered)",
             .input_schema_json = "{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\",\"description\":\"ADR title\"}},\"required\":[\"title\"]}",
+        },
+        .{
+            .name = "devjournal_dashboard",
+            .description = "Show cross-project dashboard summary",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{}}",
         },
         .{
             .name = "devjournal_search",
@@ -1606,6 +1666,373 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
             return try std.fmt.allocPrint(allocator, "No matches for \"{s}\"", .{query});
         }
         return try buf.toOwnedSlice(allocator);
+    }
+
+    // === New tools (project context, backlog read/reorder/prioritise, daily read/prepend, session list, create note, toggle task) ===
+
+    if (std.mem.eql(u8, tool_name, "devjournal_project_list")) {
+        var dir = Io.Dir.cwd().openDir(io, "journal", .{ .iterate = true }) catch
+            return allocator.dupe(u8, "No journal directory found");
+        defer dir.close(io);
+
+        var buf = std.ArrayList(u8).empty;
+        var iter = dir.iterate();
+        while (try iter.next(io)) |entry| {
+            if (entry.kind == .directory) {
+                // Check if it has overview.md
+                const overview_path = try std.fmt.allocPrint(allocator, "journal/{s}/overview.md", .{entry.name});
+                defer allocator.free(overview_path);
+                if (io_mod.fileExists(Io.Dir.cwd(), io, overview_path)) {
+                    try buf.print(allocator, "{s}\n", .{entry.name});
+                }
+            }
+        }
+        if (buf.items.len == 0) {
+            return allocator.dupe(u8, "No projects found");
+        }
+        return try buf.toOwnedSlice(allocator);
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_project_create")) {
+        const project = try mcp.extractString(allocator, args_json, "project") orelse
+            return allocator.dupe(u8, "Missing project parameter");
+        defer allocator.free(project);
+
+        const description = try mcp.extractString(allocator, args_json, "description");
+        defer if (description) |d| allocator.free(d);
+        const repo = try mcp.extractString(allocator, args_json, "repo");
+        defer if (repo) |r| allocator.free(r);
+        const tech = try mcp.extractString(allocator, args_json, "tech");
+        defer if (tech) |t| allocator.free(t);
+
+        const project_dir = try std.fmt.allocPrint(allocator, "journal/{s}", .{project});
+        defer allocator.free(project_dir);
+        io_mod.ensureDir(Io.Dir.cwd(), io, project_dir) catch {};
+
+        const overview = try core.project.buildOverview(allocator, project, description, repo, if (tech) |t| &[_][]const u8{t} else null, "active");
+        defer allocator.free(overview);
+
+        const overview_path = try std.fmt.allocPrint(allocator, "{s}/overview.md", .{project_dir});
+        defer allocator.free(overview_path);
+        try io_mod.writeToDir(Io.Dir.cwd(), io, overview_path, overview, null);
+
+        const backlog_path = try std.fmt.allocPrint(allocator, "{s}/backlog.md", .{project_dir});
+        defer allocator.free(backlog_path);
+        const backlog_content = try std.fmt.allocPrint(allocator, "# Backlog -- {s}\n\n", .{project});
+        defer allocator.free(backlog_content);
+        try io_mod.writeToDir(Io.Dir.cwd(), io, backlog_path, backlog_content, null);
+
+        return try std.fmt.allocPrint(allocator, "Created project: {s}", .{project});
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_project_context")) {
+        // Composite: overview + recent sessions + open backlog items
+        var buf = std.ArrayList(u8).empty;
+
+        // Overview
+        if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/overview.md")) |read| {
+            defer read.deinit();
+            if (core.project.parseOverview(allocator, read.content)) |maybe_info| {
+                if (maybe_info) |info| {
+                    defer info.deinit();
+                    try buf.print(allocator, "## Project: {s}\nStatus: {s}\n", .{ info.name, info.status });
+                    if (info.repo) |r| try buf.print(allocator, "Repo: {s}\n", .{r});
+                    if (info.tech) |t| {
+                        try buf.appendSlice(allocator, "Tech:");
+                        for (t) |item| try buf.print(allocator, " {s}", .{item});
+                        try buf.append(allocator, '\n');
+                    }
+                    try buf.append(allocator, '\n');
+                }
+            } else |_| {}
+        } else |_| {}
+
+        // Recent sessions (last 3)
+        var dir = Io.Dir.cwd().openDir(io, "journal/sessions", .{ .iterate = true }) catch null;
+        if (dir) |*d| {
+            defer d.close(io);
+            var filenames = std.ArrayListUnmanaged([]const u8).empty;
+            defer {
+                for (filenames.items) |f| allocator.free(f);
+                filenames.deinit(allocator);
+            }
+            var iter = d.iterate();
+            while (try iter.next(io)) |entry| {
+                if (core.session.parseSessionFilename(entry.name) != null) {
+                    try filenames.append(allocator, try allocator.dupe(u8, entry.name));
+                }
+            }
+            // Sort by date (descending)
+            std.mem.sort([]const u8, filenames.items, {}, struct {
+                fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                    return std.mem.lessThan(u8, b, a); // reverse for descending
+                }
+            }.lessThan);
+
+            if (filenames.items.len > 0) {
+                try buf.appendSlice(allocator, "## Recent Sessions\n");
+                const count = @min(filenames.items.len, 3);
+                for (filenames.items[0..count]) |f| {
+                    if (core.session.parseSessionFilename(f)) |s| {
+                        try buf.print(allocator, "- {s} {s}\n", .{ s.date, s.topic });
+                    }
+                }
+                try buf.append(allocator, '\n');
+            }
+        }
+
+        // Open backlog items
+        if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md")) |read| {
+            defer read.deinit();
+            if (core.backlog.parseItems(allocator, read.content)) |items| {
+                defer allocator.free(items);
+                var open_count: usize = 0;
+                try buf.appendSlice(allocator, "## Open Backlog Items\n");
+                for (items) |item| {
+                    if (!item.checked) {
+                        open_count += 1;
+                        const id_str = if (item.id) |id| blk: {
+                            var id_buf: [18]u8 = undefined;
+                            break :blk id.format(&id_buf);
+                        } else "no-id";
+                        try buf.print(allocator, "- {s} {s}\n", .{ id_str, item.text });
+                    }
+                }
+                if (open_count == 0) {
+                    try buf.appendSlice(allocator, "(none)\n");
+                }
+            } else |_| {}
+        } else |_| {}
+
+        if (buf.items.len == 0) {
+            return allocator.dupe(u8, "No project context found. Run 'devjournal init' first.");
+        }
+        return try buf.toOwnedSlice(allocator);
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_project_summary")) {
+        var dir = Io.Dir.cwd().openDir(io, "journal/sessions", .{ .iterate = true }) catch
+            return allocator.dupe(u8, "No sessions found");
+        defer dir.close(io);
+
+        var dates = std.ArrayListUnmanaged([]const u8).empty;
+        defer {
+            for (dates.items) |d| allocator.free(d);
+            dates.deinit(allocator);
+        }
+        var topics = std.ArrayListUnmanaged([]const u8).empty;
+        defer {
+            for (topics.items) |t| allocator.free(t);
+            topics.deinit(allocator);
+        }
+        var counts = std.ArrayListUnmanaged(usize).empty;
+        defer counts.deinit(allocator);
+
+        var iter = dir.iterate();
+        while (try iter.next(io)) |entry| {
+            if (core.session.parseSessionFilename(entry.name)) |summary| {
+                try dates.append(allocator, try allocator.dupe(u8, summary.date));
+                try topics.append(allocator, try allocator.dupe(u8, summary.topic));
+                try counts.append(allocator, 0);
+            }
+        }
+
+        const summary = try core.project.buildSummary(allocator, dates.items, topics.items, counts.items);
+        defer allocator.free(summary.sessions);
+
+        var buf = std.ArrayList(u8).empty;
+        try buf.print(allocator, "Sessions: {d}\n", .{summary.session_count});
+        for (summary.sessions) |s| {
+            try buf.print(allocator, "  {s} {s}\n", .{ s.date, s.topic });
+        }
+        return try buf.toOwnedSlice(allocator);
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_backlog_read")) {
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch
+            return mcp.buildToolResultText(allocator, "No backlog.md found", true);
+        defer read.deinit();
+        return try allocator.dupe(u8, read.content);
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_backlog_reorder")) {
+        const ids_json = try mcp.extractRaw(allocator, args_json, "ids") orelse
+            return allocator.dupe(u8, "Missing ids parameter");
+        defer allocator.free(ids_json);
+
+        const id_list = try mcp.extractStringArray(allocator, ids_json, "") orelse
+            return allocator.dupe(u8, "Failed to parse ids array");
+        defer {
+            for (id_list) |s| allocator.free(s);
+            allocator.free(id_list);
+        }
+
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch
+            return allocator.dupe(u8, "No backlog.md found");
+        defer read.deinit();
+
+        const new_content = core.backlog.reorder(allocator, read.content, id_list) catch
+            return allocator.dupe(u8, "Failed to reorder");
+        defer allocator.free(new_content);
+
+        try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+        return try std.fmt.allocPrint(allocator, "Reordered {d} items to top", .{id_list.len});
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_backlog_prioritise")) {
+        const id_str = try mcp.extractString(allocator, args_json, "id") orelse
+            return allocator.dupe(u8, "Missing id parameter");
+        defer allocator.free(id_str);
+
+        const position = try mcp.extractInteger(allocator, args_json, "position") orelse
+            return allocator.dupe(u8, "Missing position parameter");
+
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch
+            return allocator.dupe(u8, "No backlog.md found");
+        defer read.deinit();
+
+        const new_content = core.backlog.prioritise(allocator, read.content, id_str, @intCast(position)) catch |err| {
+            if (err == error.ItemNotFound) return allocator.dupe(u8, "Item not found");
+            return err;
+        };
+        defer allocator.free(new_content);
+
+        try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+        return try std.fmt.allocPrint(allocator, "Moved {s} to position {d}", .{ id_str, position });
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_toggle_task")) {
+        const id_str = try mcp.extractString(allocator, args_json, "id") orelse
+            return allocator.dupe(u8, "Missing id parameter");
+        defer allocator.free(id_str);
+
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch
+            return allocator.dupe(u8, "No backlog.md found");
+        defer read.deinit();
+
+        const new_content = core.backlog.toggleTask(allocator, read.content, id_str) catch |err| {
+            if (err == error.ItemNotFound) return allocator.dupe(u8, "Item not found");
+            return err;
+        };
+        defer allocator.free(new_content);
+
+        try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+        return try std.fmt.allocPrint(allocator, "Toggled task: {s}", .{id_str});
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_daily_read")) {
+        // Alias of daily_show
+        const path = try todayFilename(allocator, io);
+        defer allocator.free(path);
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, path) catch
+            return allocator.dupe(u8, "No daily note for today");
+        defer read.deinit();
+        return try allocator.dupe(u8, read.content);
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_daily_prepend")) {
+        const text = try mcp.extractString(allocator, args_json, "text") orelse
+            return allocator.dupe(u8, "Missing text parameter");
+        defer allocator.free(text);
+
+        const path = try todayFilename(allocator, io);
+        defer allocator.free(path);
+
+        const time_str = try todayTimeHM(io, allocator);
+        defer allocator.free(time_str);
+
+        const entry = try core.daily.buildEntry(allocator, time_str, text);
+        defer allocator.free(entry);
+
+        var existing_content: []const u8 = "";
+        var mtime_guard: ?Io.Timestamp = null;
+        var read_owned = false;
+        if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, path)) |read| {
+            existing_content = read.content;
+            mtime_guard = read.mtime;
+            read_owned = true;
+        } else |_| {}
+
+        const new_content = try core.daily.prependContent(allocator, existing_content, entry);
+        defer allocator.free(new_content);
+        if (read_owned) allocator.free(existing_content);
+
+        io_mod.ensureDir(Io.Dir.cwd(), io, "journal/daily") catch {};
+        try io_mod.writeToDir(Io.Dir.cwd(), io, path, new_content, mtime_guard);
+        return try std.fmt.allocPrint(allocator, "Prepended: {s}", .{entry});
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_session_list")) {
+        var dir = Io.Dir.cwd().openDir(io, "journal/sessions", .{ .iterate = true }) catch
+            return allocator.dupe(u8, "No sessions directory found");
+        defer dir.close(io);
+
+        var filenames = std.ArrayListUnmanaged([]const u8).empty;
+        defer {
+            for (filenames.items) |f| allocator.free(f);
+            filenames.deinit(allocator);
+        }
+
+        var iter = dir.iterate();
+        while (try iter.next(io)) |entry| {
+            if (std.mem.endsWith(u8, entry.name, ".md")) {
+                try filenames.append(allocator, try allocator.dupe(u8, entry.name));
+            }
+        }
+
+        const summaries = try core.session.parseSessionFilenames(allocator, filenames.items);
+        defer allocator.free(summaries);
+
+        std.mem.sort(core.session.SessionSummary, summaries, {}, struct {
+            fn lessThan(_: void, a: core.session.SessionSummary, b: core.session.SessionSummary) bool {
+                return std.mem.lessThan(u8, a.date, b.date);
+            }
+        }.lessThan);
+
+        var buf = std.ArrayList(u8).empty;
+        if (summaries.len == 0) {
+            return allocator.dupe(u8, "No session notes found.");
+        }
+        for (summaries) |s| {
+            try buf.print(allocator, "{s} {s}\n", .{ s.date, s.topic });
+        }
+        return try buf.toOwnedSlice(allocator);
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_create_note")) {
+        const title = try mcp.extractString(allocator, args_json, "title") orelse
+            return allocator.dupe(u8, "Missing title parameter");
+        defer allocator.free(title);
+
+        const body = try mcp.extractString(allocator, args_json, "body") orelse "(TODO: write your note here)";
+        defer if (!std.mem.eql(u8, body, "(TODO: write your note here)")) allocator.free(body);
+
+        const tags = try mcp.extractStringArray(allocator, args_json, "tags");
+        defer if (tags) |t| {
+            for (t) |s| allocator.free(s);
+            allocator.free(t);
+        };
+
+        const date = todayDate(io);
+        var date_buf: [10]u8 = undefined;
+        const date_str = std.fmt.bufPrint(&date_buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+            date.year, date.month, date.day,
+        }) catch unreachable;
+
+        const note_content = core.note.build(allocator, title, tags, date_str, body) catch
+            return allocator.dupe(u8, "Failed to build note");
+        defer allocator.free(note_content);
+
+        var fname_buf: [128]u8 = undefined;
+        const fname = std.fmt.bufPrint(&fname_buf, "{s}.md", .{title}) catch
+            return allocator.dupe(u8, "Title too long for filename");
+
+        io_mod.ensureDir(Io.Dir.cwd(), io, "journal/notes") catch {};
+        const full_path = try std.fmt.allocPrint(allocator, "journal/notes/{s}", .{fname});
+        defer allocator.free(full_path);
+
+        try io_mod.writeToDir(Io.Dir.cwd(), io, full_path, note_content, null);
+        return try std.fmt.allocPrint(allocator, "Created: {s}", .{full_path});
     }
 
     return try std.fmt.allocPrint(allocator, "Unknown tool: {s}", .{tool_name});

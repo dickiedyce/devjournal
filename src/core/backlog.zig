@@ -444,6 +444,77 @@ pub fn prioritise(
     return reorder(allocator, content, open_ids.items);
 }
 
+/// Toggle a backlog item's checkbox state (checked <-> unchecked).
+/// Finds the line containing the given ID (or text substring) and flips it.
+/// If checked, becomes unchecked (and removes @done timestamp).
+/// If unchecked, becomes checked (without adding @done — use markDone for that).
+/// Returns a new string with the modification applied. Caller owns the memory.
+pub fn toggleTask(
+    allocator: Allocator,
+    content: []const u8,
+    id_str: []const u8,
+) (Allocator.Error || error{ItemNotFound})![]const u8 {
+    const target_id = ids.parse(id_str);
+
+    var result = std.ArrayListUnmanaged(u8).empty;
+    errdefer result.deinit(allocator);
+
+    var found = false;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    var first = true;
+    while (lines.next()) |line| {
+        if (!first) {
+            result.append(allocator, '\n') catch return error.OutOfMemory;
+        }
+        first = false;
+
+        if (!found) {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            if (parseItemLine(trimmed)) |item| {
+                const matches = blk: {
+                    if (item.id != null and target_id != null) {
+                        break :blk item.id.?.eql(target_id.?);
+                    }
+                    if (std.mem.indexOf(u8, trimmed, id_str) != null) {
+                        break :blk true;
+                    }
+                    break :blk false;
+                };
+
+                if (matches) {
+                    found = true;
+                    // Flip the checkbox
+                    const new_check: []const u8 = if (item.checked) " " else "x";
+
+                    // Rebuild the line
+                    result.appendSlice(allocator, "- [") catch return error.OutOfMemory;
+                    result.appendSlice(allocator, new_check) catch return error.OutOfMemory;
+                    result.appendSlice(allocator, "] ") catch return error.OutOfMemory;
+                    if (item.id) |id| {
+                        var id_buf: [18]u8 = undefined;
+                        const fid = id.format(&id_buf);
+                        result.appendSlice(allocator, fid) catch return error.OutOfMemory;
+                        result.append(allocator, ' ') catch return error.OutOfMemory;
+                    }
+                    result.appendSlice(allocator, item.text) catch return error.OutOfMemory;
+                    if (item.priority) |p| {
+                        result.append(allocator, ' ') catch return error.OutOfMemory;
+                        result.appendSlice(allocator, p.toTag()) catch return error.OutOfMemory;
+                    }
+                    // Don't copy @done timestamp when toggling
+                    continue;
+                }
+            }
+        }
+
+        // Copy line as-is
+        result.appendSlice(allocator, line) catch return error.OutOfMemory;
+    }
+
+    if (!found) return error.ItemNotFound;
+    return try result.toOwnedSlice(allocator);
+}
+
 // ==================== TESTS ====================
 
 test "parseItemLine with ID and priority" {
@@ -589,4 +660,43 @@ test "markDone returns error for already-done item" {
     var id_buf: [18]u8 = undefined;
     const id_formatted = id.format(&id_buf);
     try testing.expectError(error.ItemNotFound, markDone(testing.allocator, content, id_formatted, "26-08-09 16:00"));
+}
+
+test "toggleTask unchecks an item" {
+    const content = "- [x] [#20260809-a3f2] Task @done (26-08-09 10:00)";
+    const result = try toggleTask(testing.allocator, content, "[#20260809-a3f2]");
+    defer testing.allocator.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "- [ ]") != null);
+    // Should NOT have @done
+    try testing.expect(std.mem.indexOf(u8, result, "@done") == null);
+    // Should still have the text
+    try testing.expect(std.mem.indexOf(u8, result, "Task") != null);
+}
+
+test "toggleTask checks an item" {
+    const id = ids.generateId("My task", .{ .year = 2026, .month = 8, .day = 9 });
+    var id_buf: [18]u8 = undefined;
+    const id_str = id.format(&id_buf);
+
+    const content = try std.fmt.allocPrint(testing.allocator, "- [ ] {s} My task", .{id_str});
+    defer testing.allocator.free(content);
+
+    const result = try toggleTask(testing.allocator, content, id_str);
+    defer testing.allocator.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "- [x]") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "My task") != null);
+}
+
+test "toggleTask preserves priority when unchecking" {
+    const content = "- [x] [#20260809-a3f2] Task @high @done (26-08-09 10:00)";
+    const result = try toggleTask(testing.allocator, content, "[#20260809-a3f2]");
+    defer testing.allocator.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "- [ ]") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "@high") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "@done") == null);
+}
+
+test "toggleTask returns error for missing item" {
+    const content = "- [ ] Task";
+    try testing.expectError(error.ItemNotFound, toggleTask(testing.allocator, content, "[#99999999-xxxx]"));
 }

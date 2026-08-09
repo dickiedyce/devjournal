@@ -185,6 +185,19 @@ pub fn extractString(allocator: Allocator, params_json: []const u8, field: []con
     return null;
 }
 
+/// Extract an integer field from a params JSON string.
+pub fn extractInteger(allocator: Allocator, params_json: []const u8, field: []const u8) !?i64 {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, params_json, .{
+        .allocate = .alloc_always,
+    }) catch return null;
+    defer parsed.deinit();
+
+    if (parsed.value.object.get(field)) |val| {
+        if (val == .integer) return @intCast(val.integer);
+    }
+    return null;
+}
+
 /// Extract a string array field from a params JSON string.
 pub fn extractStringArray(allocator: Allocator, params_json: []const u8, field: []const u8) !?[][]const u8 {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, params_json, .{
