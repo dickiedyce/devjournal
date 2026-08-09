@@ -50,7 +50,7 @@ pub fn build(b: *std.Build) void {
     // Install step: copy binary to ~/.local/bin/
     const install_cmd = b.addSystemCommand(&.{
         "sh", "-c",
-        \\mkdir -p "$HOME/.local/bin" && cp -f "$1" "$HOME/.local/bin/devjournal" && echo "Installed to $HOME/.local/bin/devjournal"
+        \\mkdir -p "$HOME/.local/bin" && cp -f "$1" "$HOME/.local/bin/devjournal" && codesign --sign - --force "$HOME/.local/bin/devjournal" 2>/dev/null; echo "Installed to $HOME/.local/bin/devjournal"
         \\
     });
     install_cmd.addArg("sh"); // $0

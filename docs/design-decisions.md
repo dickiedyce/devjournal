@@ -8,7 +8,7 @@
 
 ## Language and Runtime
 
-**Decision: Zig**
+### Decision: Zig
 
 - Single static binary, zero external dependencies.
 - Best-in-class cross-compilation.
@@ -53,7 +53,7 @@ journal = "../ObsidianVault/Code Journal"
 
 ### Journal folder layout
 
-```
+```text
 Code Journal/
     overview.md
     backlog.md
@@ -67,7 +67,7 @@ Code Journal/
 
 ### Relocation
 
-```
+```text
 devjournal relocate /new/path/to/journal    # update .devjournal.toml
 devjournal relocate                         # interactive prompt
 ```
@@ -80,7 +80,7 @@ On any command, if the journal path is invalid, the tool suggests `devjournal re
 
 **Decision: Hierarchical subcommands** following the `git`/`cargo` convention.
 
-```
+```text
 devjournal init [--project <name>]        # Create .devjournal.toml + journal structure
 devjournal project <subcommand>           # list, create, overview, summary
 devjournal backlog <subcommand>           # list, add, done, reorder, prioritise
@@ -185,7 +185,7 @@ Estimated ~200-400 lines. Fully testable, zero dependencies. If full YAML compli
 
 **Decision: Single binary, dual mode (CLI + MCP).**
 
-```
+```text
 src/
     core/           # Domain logic (pure, no I/O)
         yaml.zig        # YAML subset parser

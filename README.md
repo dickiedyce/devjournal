@@ -97,7 +97,7 @@ Exposes 11 MCP tools (`devjournal_init`, `devjournal_backlog_list`, etc.) via JS
 
 ## Journal Structure
 
-```
+```text
 journal/
     overview.md          # Project metadata (YAML frontmatter)
     backlog.md           # Task list with IDs

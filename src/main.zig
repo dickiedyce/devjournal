@@ -244,8 +244,8 @@ fn cmdBacklog(allocator: Allocator, io: Io, args: []const []const u8, json_outpu
 }
 
 fn cmdBacklogList(allocator: Allocator, io: Io, json_output: bool) !void {
-    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch {
-        try printError(io, "backlog list", "journal/backlog.md not found. Run 'devjournal init' first.");
+    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, journalPath(allocator, io, "backlog.md")) catch {
+        try printError(io, "backlog list", "backlog.md not found. Run 'devjournal init' first.");
         return;
     };
     defer read.deinit();
@@ -323,12 +323,33 @@ fn todayFilename(allocator: Allocator, io: Io) ![]const u8 {
     const date = todayDate(io);
     var date_buf: [14]u8 = undefined;
     const date_str = core.daily.formatFilename(date, &date_buf);
-    return std.fmt.allocPrint(allocator, "journal/daily/{s}", .{date_str});
+    const root = resolveJournalRoot(allocator, io);
+    return std.fmt.allocPrint(allocator, "{s}/daily/{s}", .{ root, date_str });
+}
+
+/// Read .devjournal.toml and return the journal root path.
+/// Falls back to "journal" (relative to CWD) if config not found or unreadable.
+fn resolveJournalRoot(allocator: Allocator, io: Io) []const u8 {
+    if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, ".devjournal.toml")) |read| {
+        defer read.deinit();
+        if (core.config.parse(allocator, read.content)) |cfg| {
+            defer cfg.deinit(allocator);
+            return allocator.dupe(u8, cfg.journal_path) catch "journal";
+        } else |_| {}
+    } else |_| {}
+    return "journal";
+}
+
+/// Build a path under the journal root (e.g. "backlog.md" -> "journal/backlog.md" or "/vault/journal/backlog.md").
+fn journalPath(allocator: Allocator, io: Io, suffix: []const u8) []const u8 {
+    const root = resolveJournalRoot(allocator, io);
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ root, suffix }) catch suffix;
 }
 
 fn cmdBacklogAdd(allocator: Allocator, io: Io, text: []const u8, json_output: bool) !void {
-    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch {
-        try printError(io, "backlog add", "journal/backlog.md not found. Run 'devjournal init' first.");
+    const backlog = journalPath(allocator, io, "backlog.md");
+    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, backlog) catch {
+        try printError(io, "backlog add", "backlog.md not found. Run 'devjournal init' first.");
         return;
     };
     defer read.deinit();
@@ -341,7 +362,7 @@ fn cmdBacklogAdd(allocator: Allocator, io: Io, text: []const u8, json_output: bo
     const new_content = try insertAfterLastOpenItem(allocator, read.content, line);
     defer allocator.free(new_content);
 
-    try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+    try io_mod.writeToDir(Io.Dir.cwd(), io, backlog, new_content, read.mtime);
 
     var buf: [1024]u8 = undefined;
     var w = Io.File.writer(.stdout(), io, &buf);
@@ -382,8 +403,9 @@ fn insertAfterLastOpenItem(allocator: Allocator, content: []const u8, new_line: 
 }
 
 fn cmdBacklogDone(allocator: Allocator, io: Io, id_str: []const u8, json_output: bool) !void {
-    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch {
-        try printError(io, "backlog done", "journal/backlog.md not found.");
+    const backlog = journalPath(allocator, io, "backlog.md");
+    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, backlog) catch {
+        try printError(io, "backlog done", "backlog.md not found.");
         return;
     };
     defer read.deinit();
@@ -400,7 +422,7 @@ fn cmdBacklogDone(allocator: Allocator, io: Io, id_str: []const u8, json_output:
     };
     defer allocator.free(new_content);
 
-    try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+    try io_mod.writeToDir(Io.Dir.cwd(), io, backlog, new_content, read.mtime);
 
     var buf: [1024]u8 = undefined;
     var w = Io.File.writer(.stdout(), io, &buf);
@@ -492,7 +514,7 @@ fn cmdDailyAppend(allocator: Allocator, io: Io, text: []const u8, json_output: b
     defer allocator.free(new_content);
 
     // Create directory if needed
-    io_mod.ensureDir(Io.Dir.cwd(), io, "journal/daily") catch {};
+    io_mod.ensureDir(Io.Dir.cwd(), io, journalPath(allocator, io, "daily")) catch {};
 
     try io_mod.writeToDir(Io.Dir.cwd(), io, path, new_content, mtime_guard);
 
@@ -563,10 +585,11 @@ fn cmdSessionCreate(allocator: Allocator, io: Io, topic: []const u8, json_output
 
     var fname_buf: [128]u8 = undefined;
     const fname = core.session.formatFilename(date, topic, &fname_buf);
-    const full_path = try std.fmt.allocPrint(allocator, "journal/sessions/{s}", .{fname});
+    const sess_dir = journalPath(allocator, io, "sessions");
+    const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ sess_dir, fname });
     defer allocator.free(full_path);
 
-    io_mod.ensureDir(Io.Dir.cwd(), io, "journal/sessions") catch {};
+    io_mod.ensureDir(Io.Dir.cwd(), io, sess_dir) catch {};
     try io_mod.writeToDir(Io.Dir.cwd(), io, full_path, note, null);
 
     var buf: [1024]u8 = undefined;
@@ -598,8 +621,8 @@ fn cmdProject(allocator: Allocator, io: Io, args: []const []const u8, json_outpu
 }
 
 fn cmdProjectOverview(allocator: Allocator, io: Io, json_output: bool) !void {
-    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/overview.md") catch {
-        try printError(io, "project overview", "journal/overview.md not found. Run 'devjournal init' first.");
+    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, journalPath(allocator, io, "overview.md")) catch {
+        try printError(io, "project overview", "overview.md not found. Run 'devjournal init' first.");
         return;
     };
     defer read.deinit();
@@ -649,7 +672,7 @@ fn cmdDashboard(allocator: Allocator, io: Io, json_output: bool) !void {
 
     // Read overview
     var has_overview = false;
-    if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/overview.md")) |read| {
+    if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, journalPath(allocator, io, "overview.md"))) |read| {
         defer read.deinit();
         if (core.project.parseOverview(allocator, read.content)) |maybe_info| {
             if (maybe_info) |*info| {
@@ -665,7 +688,7 @@ fn cmdDashboard(allocator: Allocator, io: Io, json_output: bool) !void {
     // Count backlog items
     var open_count: usize = 0;
     var done_count: usize = 0;
-    if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md")) |read| {
+    if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, journalPath(allocator, io, "backlog.md"))) |read| {
         defer read.deinit();
         if (core.backlog.parseItems(allocator, read.content)) |items| {
             defer allocator.free(items);
@@ -745,8 +768,9 @@ fn cmdRelocate(allocator: Allocator, io: Io, args: []const []const u8, json_outp
 // ==================== v0.2 Commands ====================
 
 fn cmdBacklogReorder(allocator: Allocator, io: Io, id_list: []const []const u8, json_output: bool) !void {
-    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch {
-        try printError(io, "backlog reorder", "journal/backlog.md not found.");
+    const backlog = journalPath(allocator, io, "backlog.md");
+    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, backlog) catch {
+        try printError(io, "backlog reorder", "backlog.md not found.");
         return;
     };
     defer read.deinit();
@@ -757,7 +781,7 @@ fn cmdBacklogReorder(allocator: Allocator, io: Io, id_list: []const []const u8, 
     };
     defer allocator.free(new_content);
 
-    try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+    try io_mod.writeToDir(Io.Dir.cwd(), io, backlog, new_content, read.mtime);
 
     var buf: [1024]u8 = undefined;
     var w = Io.File.writer(.stdout(), io, &buf);
@@ -771,8 +795,9 @@ fn cmdBacklogReorder(allocator: Allocator, io: Io, id_list: []const []const u8, 
 }
 
 fn cmdBacklogPrioritise(allocator: Allocator, io: Io, id_str: []const u8, position: usize, json_output: bool) !void {
-    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch {
-        try printError(io, "backlog prioritise", "journal/backlog.md not found.");
+    const backlog = journalPath(allocator, io, "backlog.md");
+    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, backlog) catch {
+        try printError(io, "backlog prioritise", "backlog.md not found.");
         return;
     };
     defer read.deinit();
@@ -786,7 +811,7 @@ fn cmdBacklogPrioritise(allocator: Allocator, io: Io, id_str: []const u8, positi
     };
     defer allocator.free(new_content);
 
-    try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+    try io_mod.writeToDir(Io.Dir.cwd(), io, backlog, new_content, read.mtime);
 
     var buf: [1024]u8 = undefined;
     var w = Io.File.writer(.stdout(), io, &buf);
@@ -823,7 +848,7 @@ fn cmdDailyPrepend(allocator: Allocator, io: Io, text: []const u8, json_output: 
 
     if (read_owned) allocator.free(existing_content);
 
-    io_mod.ensureDir(Io.Dir.cwd(), io, "journal/daily") catch {};
+    io_mod.ensureDir(Io.Dir.cwd(), io, journalPath(allocator, io, "daily")) catch {};
     try io_mod.writeToDir(Io.Dir.cwd(), io, path, new_content, mtime_guard);
 
     var buf: [1024]u8 = undefined;
@@ -839,8 +864,8 @@ fn cmdDailyPrepend(allocator: Allocator, io: Io, text: []const u8, json_output: 
 
 fn cmdSessionList(allocator: Allocator, io: Io, json_output: bool) !void {
     // List files in journal/sessions/
-    var dir = Io.Dir.cwd().openDir(io, "journal/sessions", .{ .iterate = true }) catch {
-        try printError(io, "session list", "journal/sessions/ not found.");
+    var dir = Io.Dir.cwd().openDir(io, journalPath(allocator, io, "sessions"), .{ .iterate = true }) catch {
+        try printError(io, "session list", "sessions/ not found.");
         return;
     };
     defer dir.close(io);
@@ -893,8 +918,8 @@ fn cmdSessionList(allocator: Allocator, io: Io, json_output: bool) !void {
 
 fn cmdProjectSummary(allocator: Allocator, io: Io, json_output: bool) !void {
     // Read session filenames
-    var dir = Io.Dir.cwd().openDir(io, "journal/sessions", .{ .iterate = true }) catch {
-        try printError(io, "project summary", "journal/sessions/ not found.");
+    var dir = Io.Dir.cwd().openDir(io, journalPath(allocator, io, "sessions"), .{ .iterate = true }) catch {
+        try printError(io, "project summary", "sessions/ not found.");
         return;
     };
     defer dir.close(io);
@@ -961,11 +986,12 @@ fn cmdAdr(allocator: Allocator, io: Io, args: []const []const u8, json_output: b
 }
 
 fn cmdAdrCreate(allocator: Allocator, io: Io, title: []const u8, json_output: bool) !void {
-    io_mod.ensureDir(Io.Dir.cwd(), io, "journal/adr") catch {};
+    const adr_dir = journalPath(allocator, io, "adr");
+    io_mod.ensureDir(Io.Dir.cwd(), io, adr_dir) catch {};
 
     // Scan existing ADR files to find next number
-    var dir = Io.Dir.cwd().openDir(io, "journal/adr", .{ .iterate = true }) catch {
-        try printError(io, "adr create", "cannot open journal/adr/");
+    var dir = Io.Dir.cwd().openDir(io, adr_dir, .{ .iterate = true }) catch {
+        try printError(io, "adr create", "cannot open adr directory");
         return;
     };
     defer dir.close(io);
@@ -1002,7 +1028,7 @@ fn cmdAdrCreate(allocator: Allocator, io: Io, title: []const u8, json_output: bo
 
     var fname_buf: [12]u8 = undefined;
     const fname = core.adr.formatFilename(next_num, &fname_buf);
-    const full_path = try std.fmt.allocPrint(allocator, "journal/adr/{s}", .{fname});
+    const full_path = try std.fmt.allocPrint(allocator, "{s}/adr/{s}", .{ resolveJournalRoot(allocator, io), fname });
     defer allocator.free(full_path);
 
     try io_mod.writeToDir(Io.Dir.cwd(), io, full_path, adr_content, null);
@@ -1019,8 +1045,8 @@ fn cmdAdrCreate(allocator: Allocator, io: Io, title: []const u8, json_output: bo
 }
 
 fn cmdAdrList(allocator: Allocator, io: Io, json_output: bool) !void {
-    var dir = Io.Dir.cwd().openDir(io, "journal/adr", .{ .iterate = true }) catch {
-        try printError(io, "adr list", "journal/adr/ not found.");
+    var dir = Io.Dir.cwd().openDir(io, journalPath(allocator, io, "adr"), .{ .iterate = true }) catch {
+        try printError(io, "adr list", "adr/ not found.");
         return;
     };
     defer dir.close(io);
@@ -1092,7 +1118,8 @@ fn cmdNote(allocator: Allocator, io: Io, args: []const []const u8, json_output: 
 }
 
 fn cmdNoteCreate(allocator: Allocator, io: Io, title: []const u8, tags: ?[]const []const u8, json_output: bool) !void {
-    io_mod.ensureDir(Io.Dir.cwd(), io, "journal/notes") catch {};
+    const notes_dir = journalPath(allocator, io, "notes");
+    io_mod.ensureDir(Io.Dir.cwd(), io, notes_dir) catch {};
 
     const date = todayDate(io);
     var date_buf: [10]u8 = undefined;
@@ -1119,7 +1146,7 @@ fn cmdNoteCreate(allocator: Allocator, io: Io, title: []const u8, tags: ?[]const
         return;
     };
 
-    const full_path = try std.fmt.allocPrint(allocator, "journal/notes/{s}", .{fname});
+    const full_path = try std.fmt.allocPrint(allocator, "{s}/notes/{s}", .{ resolveJournalRoot(allocator, io), fname });
     defer allocator.free(full_path);
 
     try io_mod.writeToDir(Io.Dir.cwd(), io, full_path, note_content, null);
@@ -1413,12 +1440,13 @@ fn getTools() [TOOLS_COUNT]mcp.Tool {
 }
 
 fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: []const u8) ![]const u8 {
+    const journal = resolveJournalRoot(allocator, io);
     if (std.mem.eql(u8, tool_name, "devjournal_init")) {
         return mcp.buildToolResultText(allocator, "Init: use devjournal init from CLI", false);
     }
 
     if (std.mem.eql(u8, tool_name, "devjournal_backlog_list")) {
-        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, journalPath(allocator, io, "backlog.md")) catch
             return mcp.buildToolResultText(allocator, "No backlog.md found", true);
         defer read.deinit();
 
@@ -1442,7 +1470,8 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
             return allocator.dupe(u8, "Missing text parameter");
         defer allocator.free(text);
 
-        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch
+        const backlog = journalPath(allocator, io, "backlog.md");
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, backlog) catch
             return allocator.dupe(u8, "No backlog.md found");
         defer read.deinit();
 
@@ -1453,7 +1482,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
         const new_content = try insertAfterLastOpenItem(allocator, read.content, line);
         defer allocator.free(new_content);
 
-        try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+        try io_mod.writeToDir(Io.Dir.cwd(), io, backlog, new_content, read.mtime);
         return try std.fmt.allocPrint(allocator, "Added: {s}", .{line});
     }
 
@@ -1462,7 +1491,8 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
             return allocator.dupe(u8, "Missing id parameter");
         defer allocator.free(id_str);
 
-        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch
+        const backlog = journalPath(allocator, io, "backlog.md");
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, backlog) catch
             return allocator.dupe(u8, "No backlog.md found");
         defer read.deinit();
 
@@ -1475,7 +1505,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
         };
         defer allocator.free(new_content);
 
-        try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+        try io_mod.writeToDir(Io.Dir.cwd(), io, backlog, new_content, read.mtime);
         return try std.fmt.allocPrint(allocator, "Marked done: {s}", .{id_str});
     }
 
@@ -1518,7 +1548,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
 
         if (read_owned) allocator.free(existing_content);
 
-        io_mod.ensureDir(Io.Dir.cwd(), io, "journal/daily") catch {};
+        io_mod.ensureDir(Io.Dir.cwd(), io, journalPath(allocator, io, "daily")) catch {};
         try io_mod.writeToDir(Io.Dir.cwd(), io, path, new_content, mtime_guard);
         return try std.fmt.allocPrint(allocator, "Appended: {s}", .{entry});
     }
@@ -1555,16 +1585,17 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
 
         var fname_buf: [128]u8 = undefined;
         const fname = core.session.formatFilename(date, topic, &fname_buf);
-        const full_path = try std.fmt.allocPrint(allocator, "journal/sessions/{s}", .{fname});
+        const sess_dir = journalPath(allocator, io, "sessions");
+        const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ sess_dir, fname });
         defer allocator.free(full_path);
 
-        io_mod.ensureDir(Io.Dir.cwd(), io, "journal/sessions") catch {};
+        io_mod.ensureDir(Io.Dir.cwd(), io, sess_dir) catch {};
         try io_mod.writeToDir(Io.Dir.cwd(), io, full_path, note, null);
         return try std.fmt.allocPrint(allocator, "Created session: {s} ({d} entries)", .{ full_path, entries.len });
     }
 
     if (std.mem.eql(u8, tool_name, "devjournal_project_overview")) {
-        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/overview.md") catch
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, journalPath(allocator, io, "overview.md")) catch
             return allocator.dupe(u8, "No overview.md found");
         defer read.deinit();
 
@@ -1580,7 +1611,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
     if (std.mem.eql(u8, tool_name, "devjournal_dashboard")) {
         var open_count: usize = 0;
         var done_count: usize = 0;
-        if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md")) |read| {
+        if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, journalPath(allocator, io, "backlog.md"))) |read| {
             defer read.deinit();
             if (core.backlog.parseItems(allocator, read.content)) |items| {
                 defer allocator.free(items);
@@ -1609,10 +1640,10 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
             return allocator.dupe(u8, "Missing title parameter");
         defer allocator.free(title);
 
-        io_mod.ensureDir(Io.Dir.cwd(), io, "journal/adr") catch {};
+        io_mod.ensureDir(Io.Dir.cwd(), io, journalPath(allocator, io, "adr")) catch {};
 
-        var dir = Io.Dir.cwd().openDir(io, "journal/adr", .{ .iterate = true }) catch
-            return allocator.dupe(u8, "Cannot open journal/adr/");
+        var dir = Io.Dir.cwd().openDir(io, journalPath(allocator, io, "adr"), .{ .iterate = true }) catch
+            return allocator.dupe(u8, "Cannot open adr directory");
         defer dir.close(io);
 
         var filenames = std.ArrayListUnmanaged([]const u8).empty;
@@ -1634,7 +1665,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
 
         var fname_buf: [12]u8 = undefined;
         const fname = core.adr.formatFilename(next_num, &fname_buf);
-        const full_path = try std.fmt.allocPrint(allocator, "journal/adr/{s}", .{fname});
+        const full_path = try std.fmt.allocPrint(allocator, "{s}/adr/{s}", .{ journal, fname });
         defer allocator.free(full_path);
 
         try io_mod.writeToDir(Io.Dir.cwd(), io, full_path, adr_content, null);
@@ -1655,7 +1686,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
             all_matches.deinit(allocator);
         }
 
-        try searchDir(allocator, io, "journal", query, &all_matches);
+        try searchDir(allocator, io, journal, query, &all_matches);
 
         var buf = std.ArrayList(u8).empty;
         for (all_matches.items) |m| {
@@ -1671,7 +1702,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
     // === New tools (project context, backlog read/reorder/prioritise, daily read/prepend, session list, create note, toggle task) ===
 
     if (std.mem.eql(u8, tool_name, "devjournal_project_list")) {
-        var dir = Io.Dir.cwd().openDir(io, "journal", .{ .iterate = true }) catch
+        var dir = Io.Dir.cwd().openDir(io, journal, .{ .iterate = true }) catch
             return allocator.dupe(u8, "No journal directory found");
         defer dir.close(io);
 
@@ -1680,7 +1711,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
         while (try iter.next(io)) |entry| {
             if (entry.kind == .directory) {
                 // Check if it has overview.md
-                const overview_path = try std.fmt.allocPrint(allocator, "journal/{s}/overview.md", .{entry.name});
+                const overview_path = try std.fmt.allocPrint(allocator, "{s}/{s}/overview.md", .{ journal, entry.name });
                 defer allocator.free(overview_path);
                 if (io_mod.fileExists(Io.Dir.cwd(), io, overview_path)) {
                     try buf.print(allocator, "{s}\n", .{entry.name});
@@ -1705,7 +1736,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
         const tech = try mcp.extractString(allocator, args_json, "tech");
         defer if (tech) |t| allocator.free(t);
 
-        const project_dir = try std.fmt.allocPrint(allocator, "journal/{s}", .{project});
+        const project_dir = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ journal, project });
         defer allocator.free(project_dir);
         io_mod.ensureDir(Io.Dir.cwd(), io, project_dir) catch {};
 
@@ -1730,7 +1761,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
         var buf = std.ArrayList(u8).empty;
 
         // Overview
-        if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/overview.md")) |read| {
+        if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, journalPath(allocator, io, "overview.md"))) |read| {
             defer read.deinit();
             if (core.project.parseOverview(allocator, read.content)) |maybe_info| {
                 if (maybe_info) |info| {
@@ -1748,7 +1779,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
         } else |_| {}
 
         // Recent sessions (last 3)
-        var dir = Io.Dir.cwd().openDir(io, "journal/sessions", .{ .iterate = true }) catch null;
+        var dir = Io.Dir.cwd().openDir(io, journalPath(allocator, io, "sessions"), .{ .iterate = true }) catch null;
         if (dir) |*d| {
             defer d.close(io);
             var filenames = std.ArrayListUnmanaged([]const u8).empty;
@@ -1782,7 +1813,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
         }
 
         // Open backlog items
-        if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md")) |read| {
+        if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, journalPath(allocator, io, "backlog.md"))) |read| {
             defer read.deinit();
             if (core.backlog.parseItems(allocator, read.content)) |items| {
                 defer allocator.free(items);
@@ -1811,7 +1842,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
     }
 
     if (std.mem.eql(u8, tool_name, "devjournal_project_summary")) {
-        var dir = Io.Dir.cwd().openDir(io, "journal/sessions", .{ .iterate = true }) catch
+        var dir = Io.Dir.cwd().openDir(io, journalPath(allocator, io, "sessions"), .{ .iterate = true }) catch
             return allocator.dupe(u8, "No sessions found");
         defer dir.close(io);
 
@@ -1849,7 +1880,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
     }
 
     if (std.mem.eql(u8, tool_name, "devjournal_backlog_read")) {
-        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, journalPath(allocator, io, "backlog.md")) catch
             return mcp.buildToolResultText(allocator, "No backlog.md found", true);
         defer read.deinit();
         return try allocator.dupe(u8, read.content);
@@ -1867,7 +1898,8 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
             allocator.free(id_list);
         }
 
-        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch
+        const backlog = journalPath(allocator, io, "backlog.md");
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, backlog) catch
             return allocator.dupe(u8, "No backlog.md found");
         defer read.deinit();
 
@@ -1875,7 +1907,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
             return allocator.dupe(u8, "Failed to reorder");
         defer allocator.free(new_content);
 
-        try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+        try io_mod.writeToDir(Io.Dir.cwd(), io, backlog, new_content, read.mtime);
         return try std.fmt.allocPrint(allocator, "Reordered {d} items to top", .{id_list.len});
     }
 
@@ -1887,7 +1919,8 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
         const position = try mcp.extractInteger(allocator, args_json, "position") orelse
             return allocator.dupe(u8, "Missing position parameter");
 
-        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch
+        const backlog = journalPath(allocator, io, "backlog.md");
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, backlog) catch
             return allocator.dupe(u8, "No backlog.md found");
         defer read.deinit();
 
@@ -1897,7 +1930,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
         };
         defer allocator.free(new_content);
 
-        try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+        try io_mod.writeToDir(Io.Dir.cwd(), io, backlog, new_content, read.mtime);
         return try std.fmt.allocPrint(allocator, "Moved {s} to position {d}", .{ id_str, position });
     }
 
@@ -1906,7 +1939,8 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
             return allocator.dupe(u8, "Missing id parameter");
         defer allocator.free(id_str);
 
-        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch
+        const backlog = journalPath(allocator, io, "backlog.md");
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, backlog) catch
             return allocator.dupe(u8, "No backlog.md found");
         defer read.deinit();
 
@@ -1916,7 +1950,7 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
         };
         defer allocator.free(new_content);
 
-        try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+        try io_mod.writeToDir(Io.Dir.cwd(), io, backlog, new_content, read.mtime);
         return try std.fmt.allocPrint(allocator, "Toggled task: {s}", .{id_str});
     }
 
@@ -1957,13 +1991,13 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
         defer allocator.free(new_content);
         if (read_owned) allocator.free(existing_content);
 
-        io_mod.ensureDir(Io.Dir.cwd(), io, "journal/daily") catch {};
+        io_mod.ensureDir(Io.Dir.cwd(), io, journalPath(allocator, io, "daily")) catch {};
         try io_mod.writeToDir(Io.Dir.cwd(), io, path, new_content, mtime_guard);
         return try std.fmt.allocPrint(allocator, "Prepended: {s}", .{entry});
     }
 
     if (std.mem.eql(u8, tool_name, "devjournal_session_list")) {
-        var dir = Io.Dir.cwd().openDir(io, "journal/sessions", .{ .iterate = true }) catch
+        var dir = Io.Dir.cwd().openDir(io, journalPath(allocator, io, "sessions"), .{ .iterate = true }) catch
             return allocator.dupe(u8, "No sessions directory found");
         defer dir.close(io);
 
@@ -2027,8 +2061,8 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
         const fname = std.fmt.bufPrint(&fname_buf, "{s}.md", .{title}) catch
             return allocator.dupe(u8, "Title too long for filename");
 
-        io_mod.ensureDir(Io.Dir.cwd(), io, "journal/notes") catch {};
-        const full_path = try std.fmt.allocPrint(allocator, "journal/notes/{s}", .{fname});
+        io_mod.ensureDir(Io.Dir.cwd(), io, journalPath(allocator, io, "notes")) catch {};
+        const full_path = try std.fmt.allocPrint(allocator, "{s}/notes/{s}", .{ journal, fname });
         defer allocator.free(full_path);
 
         try io_mod.writeToDir(Io.Dir.cwd(), io, full_path, note_content, null);
@@ -2038,5 +2072,4 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
     return try std.fmt.allocPrint(allocator, "Unknown tool: {s}", .{tool_name});
 }
 
-// findJournalPath removed - MCP tools use hardcoded "journal" path
-// Can be restored when .devjournal.toml config is wired up for MCP mode
+// Journal path is now resolved from .devjournal.toml via resolveJournalRoot()
