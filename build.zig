@@ -16,6 +16,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // MCP module - JSON-RPC protocol handling
+    const mcp_mod = b.addModule("mcp", .{
+        .root_source_file = b.path("src/mcp.zig"),
+        .target = target,
+    });
+
     // CLI executable
     const exe = b.addExecutable(.{
         .name = "devjournal",
@@ -26,6 +32,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "core", .module = core_mod },
                 .{ .name = "io", .module = io_mod },
+                .{ .name = "mcp", .module = mcp_mod },
             },
         }),
     });
@@ -51,7 +58,13 @@ pub fn build(b: *std.Build) void {
     });
     const run_io_tests = b.addRunArtifact(io_tests);
 
+    const mcp_tests = b.addTest(.{
+        .root_module = mcp_mod,
+    });
+    const run_mcp_tests = b.addRunArtifact(mcp_tests);
+
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_io_tests.step);
+    test_step.dependOn(&run_mcp_tests.step);
 }

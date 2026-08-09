@@ -3,8 +3,9 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const core = @import("core");
 const io_mod = @import("io");
+const mcp = @import("mcp");
 
-const VERSION = "0.1.0";
+const VERSION = "0.3.0";
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -12,15 +13,24 @@ pub fn main(init: std.process.Init) !void {
 
     const args = try init.minimal.args.toSlice(arena);
 
-    // Check for --json global flag
+    // Check for --json and --mcp global flags
     var json_output = false;
+    var mcp_mode = false;
     var filtered_args = std.ArrayList([]const u8).empty;
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--json")) {
             json_output = true;
+        } else if (std.mem.eql(u8, arg, "--mcp")) {
+            mcp_mode = true;
         } else {
             try filtered_args.append(arena, arg);
         }
+    }
+
+    // If MCP mode, run as MCP server (consumes stdin, writes to stdout)
+    if (mcp_mode) {
+        try cmdMcpServer(arena, io);
+        return;
     }
 
     // Check env var for JSON output
@@ -418,12 +428,14 @@ fn cmdDaily(allocator: Allocator, io: Io, args: []const []const u8, json_output:
             try printError(io, "daily append", "missing text");
             return;
         }
-        try cmdDailyAppend(allocator, io, args[1], json_output);    } else if (std.mem.eql(u8, sub, "prepend")) {
+        try cmdDailyAppend(allocator, io, args[1], json_output);
+    } else if (std.mem.eql(u8, sub, "prepend")) {
         if (args.len < 2) {
             try printError(io, "daily prepend", "missing text");
             return;
         }
-        try cmdDailyPrepend(allocator, io, args[1], json_output);    } else {
+        try cmdDailyPrepend(allocator, io, args[1], json_output);
+    } else {
         try printError(io, "daily", "unknown subcommand");
     }
 }
@@ -513,8 +525,10 @@ fn cmdSession(allocator: Allocator, io: Io, args: []const []const u8, json_outpu
             try printError(io, "session create", "missing topic");
             return;
         }
-        try cmdSessionCreate(allocator, io, args[1], json_output);    } else if (std.mem.eql(u8, sub, "list")) {
-        try cmdSessionList(allocator, io, json_output);    } else {
+        try cmdSessionCreate(allocator, io, args[1], json_output);
+    } else if (std.mem.eql(u8, sub, "list")) {
+        try cmdSessionList(allocator, io, json_output);
+    } else {
         try printError(io, "session", "unknown subcommand");
     }
 }
@@ -575,8 +589,10 @@ fn cmdProject(allocator: Allocator, io: Io, args: []const []const u8, json_outpu
     const sub = args[0];
 
     if (std.mem.eql(u8, sub, "overview")) {
-        try cmdProjectOverview(allocator, io, json_output);    } else if (std.mem.eql(u8, sub, "summary")) {
-        try cmdProjectSummary(allocator, io, json_output);    } else {
+        try cmdProjectOverview(allocator, io, json_output);
+    } else if (std.mem.eql(u8, sub, "summary")) {
+        try cmdProjectSummary(allocator, io, json_output);
+    } else {
         try printError(io, "project", "unknown subcommand");
     }
 }
@@ -1191,3 +1207,410 @@ fn searchDir(allocator: Allocator, io: Io, dir_path: []const u8, query: []const 
         }
     }
 }
+
+// ==================== MCP Server ====================
+
+fn cmdMcpServer(allocator: Allocator, io: Io) !void {
+    var stdin_buf: [65536]u8 = undefined;
+    var stdin_reader = Io.File.reader(.stdin(), io, &stdin_buf);
+    var stdout_buf: [65536]u8 = undefined;
+    var stdout_writer = Io.File.writer(.stdout(), io, &stdout_buf);
+    const out = &stdout_writer.interface;
+    const reader = &stdin_reader.interface;
+
+    const tools = getTools();
+
+    // Read all stdin at once, then process each line as a JSON-RPC message
+    const all_input = mcp.readAll(allocator, reader) catch return;
+    defer allocator.free(all_input);
+
+    var lines = mcp.splitLines(all_input);
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+
+        const request = mcp.parseRequest(allocator, line) catch continue;
+        defer if (request.params_raw) |p| allocator.free(p);
+
+        const response_json = handleMcpRequest(allocator, io, request, &tools) catch {
+            const err_resp = mcp.buildErrorResponse(allocator, request.id, -32603, "Internal error") catch continue;
+            defer allocator.free(err_resp);
+            out.writeAll(err_resp) catch break;
+            out.writeAll("\n") catch break;
+            out.flush() catch break;
+            continue;
+        };
+        defer allocator.free(response_json);
+
+        // Skip empty responses (notifications)
+        if (response_json.len == 0) continue;
+
+        out.writeAll(response_json) catch break;
+        out.writeAll("\n") catch break;
+        out.flush() catch break;
+    }
+}
+
+fn handleMcpRequest(allocator: Allocator, io: Io, request: mcp.Request, tools: *const [TOOLS_COUNT]mcp.Tool) ![]const u8 {
+    if (std.mem.eql(u8, request.method, "initialize")) {
+        return mcp.buildInitializeResult(allocator);
+    }
+
+    if (std.mem.eql(u8, request.method, "notifications/initialized")) {
+        // No response needed for notifications - return empty string
+        return try allocator.dupe(u8, "");
+    }
+
+    if (std.mem.eql(u8, request.method, "tools/list")) {
+        const result = try mcp.buildToolsList(allocator, tools);
+        return mcp.buildResponse(allocator, request.id, result);
+    }
+
+    if (std.mem.eql(u8, request.method, "tools/call")) {
+        const params = request.params_raw orelse return mcp.buildErrorResponse(allocator, request.id, -32600, "Missing params");
+        const tool_name = try mcp.extractString(allocator, params, "name") orelse
+            return mcp.buildErrorResponse(allocator, request.id, -32600, "Missing tool name");
+        defer allocator.free(tool_name);
+
+        const args_json = try mcp.extractRaw(allocator, params, "arguments") orelse "{}";
+        defer if (!std.mem.eql(u8, args_json, "{}")) allocator.free(args_json);
+
+        const result_text = dispatchTool(allocator, io, tool_name, args_json) catch |err| {
+            const err_text = try std.fmt.allocPrint(allocator, "Tool error: {s}", .{@errorName(err)});
+            defer allocator.free(err_text);
+            const result = try mcp.buildToolResultText(allocator, err_text, true);
+            return mcp.buildResponse(allocator, request.id, result);
+        };
+        defer allocator.free(result_text);
+
+        const result = try mcp.buildToolResultText(allocator, result_text, false);
+        return mcp.buildResponse(allocator, request.id, result);
+    }
+
+    // Unknown method
+    return mcp.buildErrorResponse(allocator, request.id, -32601, "Method not found");
+}
+
+const TOOLS_COUNT = 11;
+
+fn getTools() [TOOLS_COUNT]mcp.Tool {
+    return [_]mcp.Tool{
+        .{
+            .name = "devjournal_init",
+            .description = "Initialize a new journal structure with project overview and backlog",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\",\"description\":\"Project name\"}}}",
+        },
+        .{
+            .name = "devjournal_backlog_list",
+            .description = "List all open backlog items",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{}}",
+        },
+        .{
+            .name = "devjournal_backlog_add",
+            .description = "Add a new item to the backlog",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"Item text\"}},\"required\":[\"text\"]}",
+        },
+        .{
+            .name = "devjournal_backlog_done",
+            .description = "Mark a backlog item as done",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Item ID like [#20260809-xxxx]\"}},\"required\":[\"id\"]}",
+        },
+        .{
+            .name = "devjournal_daily_show",
+            .description = "Show today's daily note content",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{}}",
+        },
+        .{
+            .name = "devjournal_daily_append",
+            .description = "Append a timestamped entry to today's daily note",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"Entry text\"}},\"required\":[\"text\"]}",
+        },
+        .{
+            .name = "devjournal_session_create",
+            .description = "Create a session note from today's daily entries",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{\"topic\":{\"type\":\"string\",\"description\":\"Session topic\"}},\"required\":[\"topic\"]}",
+        },
+        .{
+            .name = "devjournal_project_overview",
+            .description = "Show project overview metadata",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{}}",
+        },
+        .{
+            .name = "devjournal_dashboard",
+            .description = "Show cross-project dashboard summary",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{}}",
+        },
+        .{
+            .name = "devjournal_adr_create",
+            .description = "Create a new Architecture Decision Record (auto-numbered)",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\",\"description\":\"ADR title\"}},\"required\":[\"title\"]}",
+        },
+        .{
+            .name = "devjournal_search",
+            .description = "Search across all journal files for a query string",
+            .input_schema_json = "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Search query\"}},\"required\":[\"query\"]}",
+        },
+    };
+}
+
+fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: []const u8) ![]const u8 {
+
+    if (std.mem.eql(u8, tool_name, "devjournal_init")) {
+        return mcp.buildToolResultText(allocator, "Init: use devjournal init from CLI", false);
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_backlog_list")) {
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch
+            return mcp.buildToolResultText(allocator, "No backlog.md found", true);
+        defer read.deinit();
+
+        const items = try core.backlog.parseItems(allocator, read.content);
+        defer allocator.free(items);
+
+        var buf = std.ArrayList(u8).empty;
+        for (items) |item| {
+            if (item.checked) continue;
+            const id_str = if (item.id) |id| blk: {
+                var id_buf: [18]u8 = undefined;
+                break :blk id.format(&id_buf);
+            } else "no-id";
+            try buf.print(allocator, "- {s} {s}\n", .{ id_str, item.text });
+        }
+        return try buf.toOwnedSlice(allocator);
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_backlog_add")) {
+        const text = try mcp.extractString(allocator, args_json, "text") orelse
+            return allocator.dupe(u8, "Missing text parameter");
+        defer allocator.free(text);
+
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch
+            return allocator.dupe(u8, "No backlog.md found");
+        defer read.deinit();
+
+        const date = todayDate(io);
+        const line = try core.backlog.buildItemLine(allocator, text, date);
+        defer allocator.free(line);
+
+        const new_content = try insertAfterLastOpenItem(allocator, read.content, line);
+        defer allocator.free(new_content);
+
+        try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+        return try std.fmt.allocPrint(allocator, "Added: {s}", .{line});
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_backlog_done")) {
+        const id_str = try mcp.extractString(allocator, args_json, "id") orelse
+            return allocator.dupe(u8, "Missing id parameter");
+        defer allocator.free(id_str);
+
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md") catch
+            return allocator.dupe(u8, "No backlog.md found");
+        defer read.deinit();
+
+        const ts = try todayTimestampYYMMDDHHMM(io, allocator);
+        defer allocator.free(ts);
+
+        const new_content = core.backlog.markDone(allocator, read.content, id_str, ts) catch |err| {
+            if (err == error.ItemNotFound) return allocator.dupe(u8, "Item not found");
+            return err;
+        };
+        defer allocator.free(new_content);
+
+        try io_mod.writeToDir(Io.Dir.cwd(), io, "journal/backlog.md", new_content, read.mtime);
+        return try std.fmt.allocPrint(allocator, "Marked done: {s}", .{id_str});
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_daily_show")) {
+        const path = try todayFilename(allocator, io);
+        defer allocator.free(path);
+
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, path) catch
+            return allocator.dupe(u8, "No daily note for today");
+        defer read.deinit();
+
+        return try allocator.dupe(u8, read.content);
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_daily_append")) {
+        const text = try mcp.extractString(allocator, args_json, "text") orelse
+            return allocator.dupe(u8, "Missing text parameter");
+        defer allocator.free(text);
+
+        const path = try todayFilename(allocator, io);
+        defer allocator.free(path);
+
+        const time_str = try todayTimeHM(io, allocator);
+        defer allocator.free(time_str);
+
+        const entry = try core.daily.buildEntry(allocator, time_str, text);
+        defer allocator.free(entry);
+
+        var existing_content: []const u8 = "";
+        var mtime_guard: ?Io.Timestamp = null;
+        var read_owned = false;
+        if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, path)) |read| {
+            existing_content = read.content;
+            mtime_guard = read.mtime;
+            read_owned = true;
+        } else |_| {}
+
+        const new_content = try std.fmt.allocPrint(allocator, "{s}{s}", .{ existing_content, entry });
+        defer allocator.free(new_content);
+
+        if (read_owned) allocator.free(existing_content);
+
+        io_mod.ensureDir(Io.Dir.cwd(), io, "journal/daily") catch {};
+        try io_mod.writeToDir(Io.Dir.cwd(), io, path, new_content, mtime_guard);
+        return try std.fmt.allocPrint(allocator, "Appended: {s}", .{entry});
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_session_create")) {
+        const topic = try mcp.extractString(allocator, args_json, "topic") orelse
+            return allocator.dupe(u8, "Missing topic parameter");
+        defer allocator.free(topic);
+
+        const path = try todayFilename(allocator, io);
+        defer allocator.free(path);
+
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, path) catch
+            return allocator.dupe(u8, "No daily note for today");
+        defer read.deinit();
+
+        const entries = try core.daily.parseEntries(allocator, read.content);
+        defer allocator.free(entries);
+
+        // Convert entries to string slices for buildSessionNote
+        var entry_strings = std.ArrayList([]const u8).empty;
+        defer {
+            for (entry_strings.items) |s| allocator.free(s);
+            entry_strings.deinit(allocator);
+        }
+        for (entries) |entry| {
+            const s = try std.fmt.allocPrint(allocator, "{s} -- {s}", .{ entry.timestamp, entry.text });
+            try entry_strings.append(allocator, s);
+        }
+
+        const date = todayDate(io);
+        const note = try core.session.buildSessionNote(allocator, "Project", topic, date, entry_strings.items);
+        defer allocator.free(note);
+
+        var fname_buf: [128]u8 = undefined;
+        const fname = core.session.formatFilename(date, topic, &fname_buf);
+        const full_path = try std.fmt.allocPrint(allocator, "journal/sessions/{s}", .{fname});
+        defer allocator.free(full_path);
+
+        io_mod.ensureDir(Io.Dir.cwd(), io, "journal/sessions") catch {};
+        try io_mod.writeToDir(Io.Dir.cwd(), io, full_path, note, null);
+        return try std.fmt.allocPrint(allocator, "Created session: {s} ({d} entries)", .{ full_path, entries.len });
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_project_overview")) {
+        const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/overview.md") catch
+            return allocator.dupe(u8, "No overview.md found");
+        defer read.deinit();
+
+        const maybe_info = core.project.parseOverview(allocator, read.content) catch
+            return allocator.dupe(u8, "Failed to parse overview");
+        if (maybe_info) |info| {
+            defer info.deinit();
+            return try std.fmt.allocPrint(allocator, "{s} ({s})", .{ info.name, info.status });
+        }
+        return allocator.dupe(u8, "No overview found");
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_dashboard")) {
+        var open_count: usize = 0;
+        var done_count: usize = 0;
+        if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md")) |read| {
+            defer read.deinit();
+            if (core.backlog.parseItems(allocator, read.content)) |items| {
+                defer allocator.free(items);
+                for (items) |item| {
+                    if (item.checked) done_count += 1 else open_count += 1;
+                }
+            } else |_| {}
+        } else |_| {}
+
+        var entry_count: usize = 0;
+        const path = try todayFilename(allocator, io);
+        defer allocator.free(path);
+        if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, path)) |read| {
+            defer read.deinit();
+            if (core.daily.parseEntries(allocator, read.content)) |entries| {
+                defer allocator.free(entries);
+                entry_count = entries.len;
+            } else |_| {}
+        } else |_| {}
+
+        return try std.fmt.allocPrint(allocator, "Backlog: {d} open, {d} done\nToday's entries: {d}", .{ open_count, done_count, entry_count });
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_adr_create")) {
+        const title = try mcp.extractString(allocator, args_json, "title") orelse
+            return allocator.dupe(u8, "Missing title parameter");
+        defer allocator.free(title);
+
+        io_mod.ensureDir(Io.Dir.cwd(), io, "journal/adr") catch {};
+
+        var dir = Io.Dir.cwd().openDir(io, "journal/adr", .{ .iterate = true }) catch
+            return allocator.dupe(u8, "Cannot open journal/adr/");
+        defer dir.close(io);
+
+        var filenames = std.ArrayListUnmanaged([]const u8).empty;
+        defer {
+            for (filenames.items) |f| allocator.free(f);
+            filenames.deinit(allocator);
+        }
+
+        var iter = dir.iterate();
+        while (try iter.next(io)) |entry| {
+            try filenames.append(allocator, try allocator.dupe(u8, entry.name));
+        }
+
+        const next_num = core.adr.nextNumber(filenames.items);
+        const date = todayDate(io);
+        const adr_content = core.adr.build(allocator, next_num, title, "proposed", date, null, "(TODO)", "(TODO)", null) catch
+            return allocator.dupe(u8, "Failed to build ADR");
+        defer allocator.free(adr_content);
+
+        var fname_buf: [12]u8 = undefined;
+        const fname = core.adr.formatFilename(next_num, &fname_buf);
+        const full_path = try std.fmt.allocPrint(allocator, "journal/adr/{s}", .{fname});
+        defer allocator.free(full_path);
+
+        try io_mod.writeToDir(Io.Dir.cwd(), io, full_path, adr_content, null);
+        return try std.fmt.allocPrint(allocator, "Created ADR-{d:0>3}: {s}", .{ next_num, title });
+    }
+
+    if (std.mem.eql(u8, tool_name, "devjournal_search")) {
+        const query = try mcp.extractString(allocator, args_json, "query") orelse
+            return allocator.dupe(u8, "Missing query parameter");
+        defer allocator.free(query);
+
+        var all_matches = std.ArrayListUnmanaged(core.search.Match).empty;
+        defer {
+            for (all_matches.items) |m| {
+                allocator.free(m.file);
+                allocator.free(m.line);
+            }
+            all_matches.deinit(allocator);
+        }
+
+        try searchDir(allocator, io, "journal", query, &all_matches);
+
+        var buf = std.ArrayList(u8).empty;
+        for (all_matches.items) |m| {
+            try buf.print(allocator, "{s}:{d}: {s}\n", .{ m.file, m.line_number, m.line });
+        }
+
+        if (all_matches.items.len == 0) {
+            return try std.fmt.allocPrint(allocator, "No matches for \"{s}\"", .{query});
+        }
+        return try buf.toOwnedSlice(allocator);
+    }
+
+    return try std.fmt.allocPrint(allocator, "Unknown tool: {s}", .{tool_name});
+}
+
+// findJournalPath removed - MCP tools use hardcoded "journal" path
+// Can be restored when .devjournal.toml config is wired up for MCP mode
