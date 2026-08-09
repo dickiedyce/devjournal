@@ -88,6 +88,14 @@ devjournal dashboard
 - `--json` — Output as JSON (for scripting and AI agents)
 - `DEVJOURNAL_JSON=1` — Same as `--json` (environment variable)
 
+## Shell Alias
+
+For a shorter command, add this to your shell profile (`~/.zshrc`, `~/.bashrc`):
+
+```bash
+alias dj='devjournal'
+```
+
 ## MCP Server
 
 Run as an MCP server for AI agent integration:
