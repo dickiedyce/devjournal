@@ -55,7 +55,7 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version")) {
         try printVersion(io, json_output);
     } else if (std.mem.eql(u8, command, "init")) {
-        try cmdInit(arena, io, cmd_args[2..], json_output);
+        try cmdInit(arena, io, init.minimal.environ, cmd_args[2..], json_output);
     } else if (std.mem.eql(u8, command, "backlog")) {
         try cmdBacklog(arena, io, cmd_args[2..], json_output);
     } else if (std.mem.eql(u8, command, "daily")) {
@@ -90,7 +90,8 @@ fn printUsage(io: Io) !void {
         \\Usage: devjournal [--json] <command> [args...]
         \\
         \\Commands:
-        \\  init [--project <name>]     Initialize journal structure
+        \\  init [--project <name>] [--journal <path>]
+        \\                          Initialize journal structure
         \\  backlog <subcommand>        Manage backlog items
         \\    list [--all]              List backlog items
         \\    add <text> [--priority]   Add a backlog item
@@ -146,14 +147,18 @@ fn printError(io: Io, context: []const u8, detail: []const u8) !void {
     try out.flush();
 }
 
-fn cmdInit(allocator: Allocator, io: Io, args: []const []const u8, json_output: bool) !void {
-    // Parse --project flag
+fn cmdInit(allocator: Allocator, io: Io, env: std.process.Environ, args: []const []const u8, json_output: bool) !void {
+    // Parse --project and --journal flags
     var project_name: []const u8 = "Project";
+    var journal_flag: ?[]const u8 = null;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--project") and i + 1 < args.len) {
             i += 1;
             project_name = args[i];
+        } else if (std.mem.eql(u8, args[i], "--journal") and i + 1 < args.len) {
+            i += 1;
+            journal_flag = args[i];
         }
     }
 
@@ -163,39 +168,58 @@ fn cmdInit(allocator: Allocator, io: Io, args: []const []const u8, json_output: 
         return;
     }
 
+    // Resolve journal path: --journal > vault_root > ./journal/
+    var journal_path: []const u8 = undefined;
+    var used_vault_root = false;
+
+    if (journal_flag) |flag| {
+        journal_path = flag;
+    } else {
+        // Try loading global config for vault_root
+        if (resolveVaultRoot(allocator, io, env, project_name)) |resolved| {
+            journal_path = resolved;
+            used_vault_root = true;
+        } else {
+            journal_path = "./journal";
+        }
+    }
+
     // Write .devjournal.toml
     const toml_content = try std.fmt.allocPrint(allocator,
-        \\journal = "./journal"
+        \\journal = "{s}"
         \\
         \\[project_meta]
         \\description = ""
         \\status = "active"
         \\
-    , .{});
+    , .{journal_path});
     try io_mod.writeToDir(Io.Dir.cwd(), io, ".devjournal.toml", toml_content, null);
 
     // Create journal directory structure
     const journal_dir = Io.Dir.cwd();
-    try io_mod.ensureDir(journal_dir, io, "journal");
-    try io_mod.ensureDir(journal_dir, io, "journal/daily");
-    try io_mod.ensureDir(journal_dir, io, "journal/sessions");
+    try io_mod.ensureDir(journal_dir, io, journal_path);
+    try io_mod.ensureDir(journal_dir, io, try std.fmt.allocPrint(allocator, "{s}/daily", .{journal_path}));
+    try io_mod.ensureDir(journal_dir, io, try std.fmt.allocPrint(allocator, "{s}/sessions", .{journal_path}));
 
     // Create overview.md
     const overview = try core.project.buildOverview(allocator, project_name, null, null, null, "active");
     defer allocator.free(overview);
-    try io_mod.writeToDir(journal_dir, io, "journal/overview.md", overview, null);
+    try io_mod.writeToDir(journal_dir, io, try std.fmt.allocPrint(allocator, "{s}/overview.md", .{journal_path}), overview, null);
 
     // Create backlog.md
     const backlog_content = "# Backlog\n\n";
-    try io_mod.writeToDir(journal_dir, io, "journal/backlog.md", backlog_content, null);
+    try io_mod.writeToDir(journal_dir, io, try std.fmt.allocPrint(allocator, "{s}/backlog.md", .{journal_path}), backlog_content, null);
 
     var buf: [1024]u8 = undefined;
     var w = Io.File.writer(.stdout(), io, &buf);
     const out = &w.interface;
     if (json_output) {
-        try out.print("{{\"status\":\"ok\",\"journal\":\"./journal\",\"project\":\"{s}\"}}\n", .{project_name});
+        try out.print("{{\"status\":\"ok\",\"journal\":\"{s}\",\"project\":\"{s}\"}}\n", .{ journal_path, project_name });
     } else {
-        try out.print("Initialized journal at ./journal (project: {s})\n", .{project_name});
+        try out.print("Initialized journal at {s} (project: {s})\n", .{ journal_path, project_name });
+        if (used_vault_root) {
+            try out.print("(from global vault_root in ~/.config/devjournal/config.toml)\n", .{});
+        }
     }
     try out.flush();
 }
@@ -344,6 +368,23 @@ fn resolveJournalRoot(allocator: Allocator, io: Io) []const u8 {
 fn journalPath(allocator: Allocator, io: Io, suffix: []const u8) []const u8 {
     const root = resolveJournalRoot(allocator, io);
     return std.fmt.allocPrint(allocator, "{s}/{s}", .{ root, suffix }) catch suffix;
+}
+
+/// Try to resolve a journal path from the global vault_root config.
+/// Returns null if no global config or no vault_root set.
+fn resolveVaultRoot(allocator: Allocator, io: Io, env: std.process.Environ, project_name: []const u8) ?[]const u8 {
+    const config_path = core.config.globalConfigPath(allocator, env) orelse return null;
+    defer allocator.free(config_path);
+
+    // Read the global config file (absolute path)
+    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, config_path) catch return null;
+    defer read.deinit();
+
+    const global_cfg = core.config.parseGlobal(allocator, read.content) catch return null;
+    defer global_cfg.deinit(allocator);
+
+    const vr = global_cfg.vault_root orelse return null;
+    return std.fmt.allocPrint(allocator, "{s}/Projects/{s}", .{ vr, project_name }) catch null;
 }
 
 fn cmdBacklogAdd(allocator: Allocator, io: Io, text: []const u8, json_output: bool) !void {

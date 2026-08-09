@@ -255,3 +255,123 @@ pub fn serialize(allocator: Allocator, config: Config) Allocator.Error![]const u
 
     return try buf.toOwnedSlice(allocator);
 }
+
+// ==================== GLOBAL CONFIG ====================
+
+pub const GlobalConfig = struct {
+    /// Path to the Obsidian vault root (or any journal container)
+    vault_root: ?[]const u8,
+
+    pub fn deinit(self: *const GlobalConfig, allocator: Allocator) void {
+        if (self.vault_root) |v| allocator.free(v);
+    }
+};
+
+pub const GlobalParseError = error{
+    InvalidToml,
+    OutOfMemory,
+};
+
+/// Parse a global config TOML string. The file is optional — if it doesn't
+/// exist, callers should treat all fields as null.
+/// Supports:
+///   [defaults]
+///   vault_root = "/path/to/vault"
+pub fn parseGlobal(allocator: Allocator, input: []const u8) GlobalParseError!GlobalConfig {
+    var vault_root: ?[]const u8 = null;
+
+    errdefer {
+        if (vault_root) |v| allocator.free(v);
+    }
+
+    var in_defaults = false;
+    var lines = std.mem.splitScalar(u8, input, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+        // Section header
+        if (trimmed[0] == '[') {
+            in_defaults = std.mem.eql(u8, trimmed, "[defaults]");
+            continue;
+        }
+
+        if (in_defaults) {
+            if (std.mem.indexOfScalar(u8, trimmed, '=')) |eq_pos| {
+                const key = std.mem.trim(u8, trimmed[0..eq_pos], " \t");
+                const val_raw = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t");
+
+                if (std.mem.eql(u8, key, "vault_root")) {
+                    vault_root = try allocator.dupe(u8, parseTomlString(val_raw));
+                }
+            }
+        }
+    }
+
+    return GlobalConfig{
+        .vault_root = vault_root,
+    };
+}
+
+/// Resolve the global config file path: $XDG_CONFIG_HOME/devjournal/config.toml
+/// Falls back to ~/.config/devjournal/config.toml.
+/// Returns null if HOME is not set (shouldn't happen on macOS/Linux).
+pub fn globalConfigPath(allocator: Allocator, env: std.process.Environ) ?[]const u8 {
+    const config_home = env.getPosix("XDG_CONFIG_HOME") orelse {
+        const home = env.getPosix("HOME") orelse return null;
+        return std.fmt.allocPrint(allocator, "{s}/.config/devjournal/config.toml", .{home}) catch return null;
+    };
+    return std.fmt.allocPrint(allocator, "{s}/devjournal/config.toml", .{config_home}) catch return null;
+}
+
+// ==================== GLOBAL CONFIG TESTS ====================
+
+test "parseGlobal with vault_root" {
+    const input =
+        \\[defaults]
+        \\vault_root = "/Users/me/ObsidianVault/Code Journal"
+    ;
+    const config = try parseGlobal(testing.allocator, input);
+    defer config.deinit(testing.allocator);
+    try testing.expectEqualStrings("/Users/me/ObsidianVault/Code Journal", config.vault_root.?);
+}
+
+test "parseGlobal empty file returns null vault_root" {
+    const config = try parseGlobal(testing.allocator, "");
+    defer config.deinit(testing.allocator);
+    try testing.expect(config.vault_root == null);
+}
+
+test "parseGlobal with comments" {
+    const input =
+        \\# Global devjournal config
+        \\
+        \\[defaults]
+        \\# My vault lives in iCloud
+        \\vault_root = "/path/to/vault"
+    ;
+    const config = try parseGlobal(testing.allocator, input);
+    defer config.deinit(testing.allocator);
+    try testing.expectEqualStrings("/path/to/vault", config.vault_root.?);
+}
+
+test "parseGlobal ignores non-defaults sections" {
+    const input =
+        \\[other]
+        \\vault_root = "/wrong/path"
+        \\
+        \\[defaults]
+        \\vault_root = "/correct/path"
+    ;
+    const config = try parseGlobal(testing.allocator, input);
+    defer config.deinit(testing.allocator);
+    try testing.expectEqualStrings("/correct/path", config.vault_root.?);
+}
+
+test "globalConfigPath uses HOME" {
+    // Environ is OS-backed; test with the actual environment.
+    // If HOME is set, the path should be derived from it.
+    const env = std.process.Environ.empty;
+    // With empty environ, HOME is not set, so result is null
+    try testing.expect(globalConfigPath(testing.allocator, env) == null);
+}
