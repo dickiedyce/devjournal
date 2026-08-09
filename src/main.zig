@@ -50,6 +50,14 @@ pub fn main(init: std.process.Init) !void {
         try cmdBacklog(arena, io, cmd_args[2..], json_output);
     } else if (std.mem.eql(u8, command, "daily")) {
         try cmdDaily(arena, io, cmd_args[2..], json_output);
+    } else if (std.mem.eql(u8, command, "session")) {
+        try cmdSession(arena, io, cmd_args[2..], json_output);
+    } else if (std.mem.eql(u8, command, "project")) {
+        try cmdProject(arena, io, cmd_args[2..], json_output);
+    } else if (std.mem.eql(u8, command, "dashboard")) {
+        try cmdDashboard(arena, io, json_output);
+    } else if (std.mem.eql(u8, command, "relocate")) {
+        try cmdRelocate(arena, io, cmd_args[2..], json_output);
     } else {
         try printError(io, "unknown command", command);
         try printUsage(io);
@@ -74,6 +82,12 @@ fn printUsage(io: Io) !void {
         \\  daily <subcommand>          Manage daily notes
         \\    show                      Show today's daily note
         \\    append <text>             Append timestamped entry
+        \\  session <subcommand>        Session notes
+        \\    create <topic>            Create session note from today's entries
+        \\  project <subcommand>        Project management
+        \\    overview                  Show project overview
+        \\  dashboard                   Cross-project overview
+        \\  relocate [path]             Fix moved journal path
         \\  help                        Show this help
         \\  version                     Show version
         \\
@@ -445,6 +459,232 @@ fn cmdDailyAppend(allocator: Allocator, io: Io, text: []const u8, json_output: b
         try out.print("{{\"status\":\"ok\",\"entry\":\"{s}\"}}\n", .{entry});
     } else {
         try out.print("Appended: {s}", .{entry});
+    }
+    try out.flush();
+}
+
+fn cmdSession(allocator: Allocator, io: Io, args: []const []const u8, json_output: bool) !void {
+    if (args.len == 0) {
+        try printError(io, "session", "missing subcommand (create)");
+        return;
+    }
+
+    const sub = args[0];
+
+    if (std.mem.eql(u8, sub, "create")) {
+        if (args.len < 2) {
+            try printError(io, "session create", "missing topic");
+            return;
+        }
+        try cmdSessionCreate(allocator, io, args[1], json_output);
+    } else {
+        try printError(io, "session", "unknown subcommand");
+    }
+}
+
+fn cmdSessionCreate(allocator: Allocator, io: Io, topic: []const u8, json_output: bool) !void {
+    const path = try todayFilename(allocator, io);
+    defer allocator.free(path);
+
+    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, path) catch {
+        try printError(io, "session create", "no daily note for today");
+        return;
+    };
+    defer read.deinit();
+
+    const entries = try core.daily.parseEntries(allocator, read.content);
+    defer allocator.free(entries);
+
+    // Build entry strings from parsed entries
+    var entry_strings = std.ArrayList([]const u8).empty;
+    defer {
+        for (entry_strings.items) |s| allocator.free(s);
+        entry_strings.deinit(allocator);
+    }
+    for (entries) |entry| {
+        const s = try std.fmt.allocPrint(allocator, "{s} -- {s}", .{ entry.timestamp, entry.text });
+        try entry_strings.append(allocator, s);
+    }
+
+    const date = todayDate(io);
+    const note = try core.session.buildSessionNote(allocator, "Project", topic, date, entry_strings.items);
+    defer allocator.free(note);
+
+    var fname_buf: [128]u8 = undefined;
+    const fname = core.session.formatFilename(date, topic, &fname_buf);
+    const full_path = try std.fmt.allocPrint(allocator, "journal/sessions/{s}", .{fname});
+    defer allocator.free(full_path);
+
+    io_mod.ensureDir(Io.Dir.cwd(), io, "journal/sessions") catch {};
+    try io_mod.writeToDir(Io.Dir.cwd(), io, full_path, note, null);
+
+    var buf: [1024]u8 = undefined;
+    var w = Io.File.writer(.stdout(), io, &buf);
+    const out = &w.interface;
+    if (json_output) {
+        try out.print("{{\"status\":\"ok\",\"path\":\"{s}\",\"entries\":{d}}}\n", .{ full_path, entries.len });
+    } else {
+        try out.print("Created session note: {s} ({d} entries)\n", .{ full_path, entries.len });
+    }
+    try out.flush();
+}
+
+fn cmdProject(allocator: Allocator, io: Io, args: []const []const u8, json_output: bool) !void {
+    if (args.len == 0) {
+        try printError(io, "project", "missing subcommand (overview)");
+        return;
+    }
+
+    const sub = args[0];
+
+    if (std.mem.eql(u8, sub, "overview")) {
+        try cmdProjectOverview(allocator, io, json_output);
+    } else {
+        try printError(io, "project", "unknown subcommand");
+    }
+}
+
+fn cmdProjectOverview(allocator: Allocator, io: Io, json_output: bool) !void {
+    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/overview.md") catch {
+        try printError(io, "project overview", "journal/overview.md not found. Run 'devjournal init' first.");
+        return;
+    };
+    defer read.deinit();
+
+    var info = core.project.parseOverview(allocator, read.content) catch {
+        try printError(io, "project overview", "failed to parse overview.md");
+        return;
+    } orelse {
+        try printError(io, "project overview", "no frontmatter found in overview.md");
+        return;
+    };
+    defer info.deinit();
+
+    var buf: [4096]u8 = undefined;
+    var w = Io.File.writer(.stdout(), io, &buf);
+    const out = &w.interface;
+    if (json_output) {
+        try out.print("{{\"name\":\"{s}\",\"status\":\"{s}\"", .{ info.name, info.status });
+        if (info.repo) |r| {
+            try out.print(",\"repo\":\"{s}\"", .{r});
+        }
+        try out.print("}}\n", .{});
+    } else {
+        try out.print("{s} ({s})\n", .{ info.name, info.status });
+        if (info.repo) |r| {
+            try out.print("  repo: {s}\n", .{r});
+        }
+        if (info.tech) |t| {
+            try out.writeAll("  tech:");
+            for (t) |item| {
+                try out.print(" {s}", .{item});
+            }
+            try out.writeAll("\n");
+        }
+    }
+    try out.flush();
+}
+
+fn cmdDashboard(allocator: Allocator, io: Io, json_output: bool) !void {
+    var buf: [4096]u8 = undefined;
+    var w = Io.File.writer(.stdout(), io, &buf);
+    const out = &w.interface;
+
+    if (!json_output) {
+        try out.writeAll("--- Dashboard ---\n");
+    }
+
+    // Read overview
+    var has_overview = false;
+    if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/overview.md")) |read| {
+        defer read.deinit();
+        if (core.project.parseOverview(allocator, read.content)) |maybe_info| {
+            if (maybe_info) |*info| {
+                defer info.deinit();
+                has_overview = true;
+                if (!json_output) {
+                    try out.print("Project: {s} ({s})\n", .{ info.name, info.status });
+                }
+            }
+        } else |_| {}
+    } else |_| {}
+
+    // Count backlog items
+    var open_count: usize = 0;
+    var done_count: usize = 0;
+    if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "journal/backlog.md")) |read| {
+        defer read.deinit();
+        if (core.backlog.parseItems(allocator, read.content)) |items| {
+            defer allocator.free(items);
+            for (items) |item| {
+                if (item.checked) done_count += 1 else open_count += 1;
+            }
+        } else |_| {}
+    } else |_| {}
+
+    // Count daily entries
+    var entry_count: usize = 0;
+    const path = try todayFilename(allocator, io);
+    defer allocator.free(path);
+    if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, path)) |read| {
+        defer read.deinit();
+        if (core.daily.parseEntries(allocator, read.content)) |entries| {
+            defer allocator.free(entries);
+            entry_count = entries.len;
+        } else |_| {}
+    } else |_| {}
+
+    if (json_output) {
+        try out.print("{{\"has_overview\":{s},\"backlog\":{{\"open\":{d},\"done\":{d}}},\"today_entries\":{d}}}\n", .{
+            if (has_overview) "true" else "false",
+            open_count,
+            done_count,
+            entry_count,
+        });
+    } else {
+        try out.print("Backlog: {d} open, {d} done\n", .{ open_count, done_count });
+        try out.print("Today's entries: {d}\n", .{entry_count});
+    }
+    try out.flush();
+}
+
+fn cmdRelocate(allocator: Allocator, io: Io, args: []const []const u8, json_output: bool) !void {
+    if (args.len == 0) {
+        try printError(io, "relocate", "missing new journal path");
+        return;
+    }
+
+    const new_path = args[0];
+
+    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, ".devjournal.toml") catch {
+        try printError(io, "relocate", ".devjournal.toml not found. Run 'devjournal init' first.");
+        return;
+    };
+    defer read.deinit();
+
+    var cfg = core.config.parse(allocator, read.content) catch {
+        try printError(io, "relocate", "failed to parse .devjournal.toml");
+        return;
+    };
+    defer cfg.deinit(allocator);
+
+    const new_cfg = core.config.Config{
+        .journal_path = new_path,
+        .project_meta = cfg.project_meta,
+    };
+
+    const new_content = try core.config.serialize(allocator, new_cfg);
+    defer allocator.free(new_content);
+
+    try io_mod.writeToDir(Io.Dir.cwd(), io, ".devjournal.toml", new_content, read.mtime);
+
+    var buf: [1024]u8 = undefined;
+    var w = Io.File.writer(.stdout(), io, &buf);
+    const out = &w.interface;
+    if (json_output) {
+        try out.print("{{\"status\":\"ok\",\"journal\":\"{s}\"}}\n", .{new_path});
+    } else {
+        try out.print("Journal path updated to: {s}\n", .{new_path});
     }
     try out.flush();
 }
