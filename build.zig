@@ -47,6 +47,17 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
+    // Install step: copy binary to ~/.local/bin/
+    const install_cmd = b.addSystemCommand(&.{ "sh", "-c",
+        \\mkdir -p "$HOME/.local/bin" && cp -f "$1" "$HOME/.local/bin/devjournal" && echo "Installed to $HOME/.local/bin/devjournal"
+        \\
+    });
+    install_cmd.addArg("sh"); // $0
+    install_cmd.addArtifactArg(exe); // $1 = binary path
+    install_cmd.step.dependOn(&exe.step);
+    const install_top = b.step("install-local", "Install devjournal to ~/.local/bin/");
+    install_top.dependOn(&install_cmd.step);
+
     // Test step - runs all tests
     const core_tests = b.addTest(.{
         .root_module = core_mod,

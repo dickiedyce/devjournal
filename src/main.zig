@@ -1353,7 +1353,6 @@ fn getTools() [TOOLS_COUNT]mcp.Tool {
 }
 
 fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: []const u8) ![]const u8 {
-
     if (std.mem.eql(u8, tool_name, "devjournal_init")) {
         return mcp.buildToolResultText(allocator, "Init: use devjournal init from CLI", false);
     }
