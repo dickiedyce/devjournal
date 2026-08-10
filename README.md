@@ -2,6 +2,8 @@
 
 A CLI tool for managing the journaling process for coding projects. Works standalone from the command line, alongside markdown-based tools like Obsidian, and as an MCP server for AI agents.
 
+![DevJournal demo](demo/demo.gif)
+
 ## Features
 
 - **Backlog management** — add, list, done, reorder, prioritise items with deterministic IDs
