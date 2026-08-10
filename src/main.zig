@@ -94,7 +94,7 @@ fn printUsage(io: Io) !void {
         \\                          Initialize journal structure
         \\  backlog <subcommand>        Manage backlog items
         \\    list [--all]              List backlog items
-        \\    add <text> [--priority]   Add a backlog item
+        \\    add <text> [--priority <level>]  Add a backlog item (high/medium/low)
         \\    done <id>                 Mark item done
         \\    reorder <id> [id...]      Move items to top in order
         \\    prioritise <id> <pos>     Move item to specific position
@@ -233,13 +233,26 @@ fn cmdBacklog(allocator: Allocator, io: Io, args: []const []const u8, json_outpu
     const sub = args[0];
 
     if (std.mem.eql(u8, sub, "list")) {
-        try cmdBacklogList(allocator, io, json_output);
+        try cmdBacklogList(allocator, io, args[1..], json_output);
     } else if (std.mem.eql(u8, sub, "add")) {
         if (args.len < 2) {
             try printError(io, "backlog add", "missing item text");
             return;
         }
-        try cmdBacklogAdd(allocator, io, args[1], json_output);
+        var add_priority: ?core.backlog.Priority = null;
+        if (args.len >= 4 and std.mem.eql(u8, args[2], "--priority")) {
+            const p_input = args[3];
+            if (p_input.len == 0) {
+                try printError(io, "backlog add", "priority value required (high, medium, low)");
+                return;
+            }
+            const tag_str = if (p_input[0] == '@') p_input else try std.fmt.allocPrint(allocator, "@{s}", .{p_input});
+            add_priority = core.backlog.Priority.fromTag(tag_str) orelse {
+                try printError(io, "backlog add", "priority must be high, medium, or low");
+                return;
+            };
+        }
+        try cmdBacklogAdd(allocator, io, args[1], add_priority, json_output);
     } else if (std.mem.eql(u8, sub, "done")) {
         if (args.len < 2) {
             try printError(io, "backlog done", "missing item ID");
@@ -267,7 +280,12 @@ fn cmdBacklog(allocator: Allocator, io: Io, args: []const []const u8, json_outpu
     }
 }
 
-fn cmdBacklogList(allocator: Allocator, io: Io, json_output: bool) !void {
+fn cmdBacklogList(allocator: Allocator, io: Io, args: []const []const u8, json_output: bool) !void {
+    var show_all = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--all")) show_all = true;
+    }
+
     const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, journalPath(allocator, io, "backlog.md")) catch {
         try printError(io, "backlog list", "backlog.md not found. Run 'devjournal init' first.");
         return;
@@ -282,21 +300,41 @@ fn cmdBacklogList(allocator: Allocator, io: Io, json_output: bool) !void {
         var w = Io.File.writer(.stdout(), io, &buf);
         const out = &w.interface;
         try out.writeAll("[");
-        for (items, 0..) |item, idx| {
-            if (idx > 0) try out.writeAll(",");
+        var first = true;
+        for (items) |item| {
+            if (!show_all and item.checked) continue;
+            if (!first) try out.writeAll(",");
+            first = false;
             if (item.id) |id| {
                 var id_buf: [18]u8 = undefined;
                 const id_str = id.format(&id_buf);
-                try out.print("{{\"id\":\"{s}\",\"checked\":{s},\"text\":\"{s}\"}}", .{
-                    id_str,
-                    if (item.checked) "true" else "false",
-                    item.text,
-                });
+                if (item.priority) |p| {
+                    try out.print("{{\"id\":\"{s}\",\"checked\":{s},\"text\":\"{s}\",\"priority\":\"{s}\"}}", .{
+                        id_str,
+                        if (item.checked) "true" else "false",
+                        item.text,
+                        p.toTag(),
+                    });
+                } else {
+                    try out.print("{{\"id\":\"{s}\",\"checked\":{s},\"text\":\"{s}\"}}", .{
+                        id_str,
+                        if (item.checked) "true" else "false",
+                        item.text,
+                    });
+                }
             } else {
-                try out.print("{{\"checked\":{s},\"text\":\"{s}\"}}", .{
-                    if (item.checked) "true" else "false",
-                    item.text,
-                });
+                if (item.priority) |p| {
+                    try out.print("{{\"checked\":{s},\"text\":\"{s}\",\"priority\":\"{s}\"}}", .{
+                        if (item.checked) "true" else "false",
+                        item.text,
+                        p.toTag(),
+                    });
+                } else {
+                    try out.print("{{\"checked\":{s},\"text\":\"{s}\"}}", .{
+                        if (item.checked) "true" else "false",
+                        item.text,
+                    });
+                }
             }
         }
         try out.writeAll("]\n");
@@ -306,8 +344,13 @@ fn cmdBacklogList(allocator: Allocator, io: Io, json_output: bool) !void {
         var w = Io.File.writer(.stdout(), io, &buf);
         const out = &w.interface;
         for (items) |item| {
+            if (!show_all and item.checked) continue;
             const checkbox: []const u8 = if (item.checked) "[x]" else "[ ]";
-            try out.print("- {s} {s}\n", .{ checkbox, item.text });
+            if (item.priority) |p| {
+                try out.print("- {s} {s} {s}\n", .{ checkbox, item.text, p.toTag() });
+            } else {
+                try out.print("- {s} {s}\n", .{ checkbox, item.text });
+            }
         }
         try out.flush();
     }
@@ -397,7 +440,7 @@ fn resolveVaultRoot(allocator: Allocator, io: Io, env: std.process.Environ, proj
     return std.fmt.allocPrint(allocator, "{s}/Projects/{s}", .{ vr, project_name }) catch null;
 }
 
-fn cmdBacklogAdd(allocator: Allocator, io: Io, text: []const u8, json_output: bool) !void {
+fn cmdBacklogAdd(allocator: Allocator, io: Io, text: []const u8, priority: ?core.backlog.Priority, json_output: bool) !void {
     const backlog = journalPath(allocator, io, "backlog.md");
     const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, backlog) catch {
         try printError(io, "backlog add", "backlog.md not found. Run 'devjournal init' first.");
@@ -406,7 +449,10 @@ fn cmdBacklogAdd(allocator: Allocator, io: Io, text: []const u8, json_output: bo
     defer read.deinit();
 
     const date = todayDate(io);
-    const line = try core.backlog.buildItemLine(allocator, text, date);
+    const line = if (priority) |p|
+        try core.backlog.buildItemLineWithPriority(allocator, text, date, p)
+    else
+        try core.backlog.buildItemLine(allocator, text, date);
     defer allocator.free(line);
 
     // Find insertion point: after last - [ ] line, or at end
@@ -1221,7 +1267,8 @@ fn cmdSearch(allocator: Allocator, io: Io, args: []const []const u8, json_output
 
     const query = args[0];
 
-    // Search all markdown files in journal/
+    // Search all markdown files in the resolved journal directory
+    const journal_root = resolveJournalRoot(allocator, io);
     var all_matches = std.ArrayListUnmanaged(core.search.Match).empty;
     defer {
         for (all_matches.items) |m| {
@@ -1231,7 +1278,7 @@ fn cmdSearch(allocator: Allocator, io: Io, args: []const []const u8, json_output
         all_matches.deinit(allocator);
     }
 
-    try searchDir(allocator, io, "journal", query, &all_matches);
+    try searchDir(allocator, io, journal_root, query, &all_matches);
 
     var buf: [8192]u8 = undefined;
     var w = Io.File.writer(.stdout(), io, &buf);
@@ -1511,7 +1558,11 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
                 var id_buf: [18]u8 = undefined;
                 break :blk id.format(&id_buf);
             } else "no-id";
-            try buf.print(allocator, "- {s} {s}\n", .{ id_str, item.text });
+            if (item.priority) |p| {
+                try buf.print(allocator, "- {s} {s} {s}\n", .{ id_str, item.text, p.toTag() });
+            } else {
+                try buf.print(allocator, "- {s} {s}\n", .{ id_str, item.text });
+            }
         }
         return try buf.toOwnedSlice(allocator);
     }
