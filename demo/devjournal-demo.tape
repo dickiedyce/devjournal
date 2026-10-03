@@ -74,10 +74,20 @@ Sleep 2s
 Type "# Mark an item done"
 Enter
 Sleep 500ms
-Type "devjournal backlog done [#20260810-9a66]"
+Type "devjournal backlog done $(devjournal backlog list --json | jq -r '.[0].id')"
 Enter
 Sleep 1s
 Type "devjournal backlog list"
+Enter
+Sleep 2s
+
+Type "# Toggle a task checkbox"
+Enter
+Sleep 500ms
+Type "devjournal backlog toggle $(devjournal backlog list --json | jq -r '.[0].id')"
+Enter
+Sleep 1s
+Type "devjournal backlog list --all"
 Enter
 Sleep 2s
 
@@ -150,11 +160,14 @@ Sleep 300ms
 Type "# Step 6: Create tagged notes"
 Enter
 Sleep 500ms
-Type "devjournal note create 'Rate limiting approach' api security"
+Type "devjournal note create 'Rate limiting approach' api security --body 'Allow 100 req/min per API key.'"
 Enter
 Sleep 2s
 
-Type "devjournal note create 'JWT token refresh strategy' auth security"
+Type "# Pipe a draft in as the note body"
+Enter
+Sleep 500ms
+Type "printf 'Refresh tokens rotate on use.\nReuse is rejected.' | devjournal note create 'JWT token refresh strategy' auth security"
 Enter
 Sleep 2s
 
