@@ -2,6 +2,24 @@ const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
+/// Placeholder body used when no body text is provided.
+pub const placeholder_body = "(TODO: write your note here)";
+
+/// Resolve a note body from an explicit value (e.g. --body) and/or stdin content.
+/// Explicit text wins over stdin. Trailing newlines are trimmed from the chosen
+/// source. Falls back to the placeholder when both are empty or absent.
+pub fn resolveBody(explicit: ?[]const u8, stdin_content: ?[]const u8) []const u8 {
+    if (explicit) |text| {
+        const trimmed = std.mem.trimEnd(u8, text, "\n");
+        if (trimmed.len > 0) return trimmed;
+    }
+    if (stdin_content) |text| {
+        const trimmed = std.mem.trimEnd(u8, text, "\n");
+        if (trimmed.len > 0) return trimmed;
+    }
+    return placeholder_body;
+}
+
 /// Build a generic note with optional frontmatter.
 pub fn build(
     allocator: Allocator,
@@ -95,4 +113,28 @@ test "parseTitle from content" {
 
 test "parseTitle returns null for no frontmatter" {
     try testing.expect(parseTitle("# Just a heading") == null);
+}
+
+test "resolveBody uses explicit body text" {
+    try testing.expectEqualStrings("Some body text.", resolveBody("Some body text.", null));
+}
+
+test "resolveBody prefers explicit body over stdin" {
+    try testing.expectEqualStrings("from flag", resolveBody("from flag", "from stdin"));
+}
+
+test "resolveBody uses stdin content when no explicit body" {
+    try testing.expectEqualStrings("From stdin.", resolveBody(null, "From stdin.\n"));
+}
+
+test "resolveBody trims trailing newlines only" {
+    try testing.expectEqualStrings("Line one.\nLine two.", resolveBody(null, "Line one.\nLine two.\n\n"));
+    try testing.expectEqualStrings("  indented  ", resolveBody("  indented  \n", null));
+}
+
+test "resolveBody falls back to placeholder" {
+    try testing.expectEqualStrings(placeholder_body, resolveBody(null, null));
+    try testing.expectEqualStrings(placeholder_body, resolveBody("", null));
+    try testing.expectEqualStrings(placeholder_body, resolveBody(null, ""));
+    try testing.expectEqualStrings(placeholder_body, resolveBody(null, "\n\n"));
 }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const core = @import("core");
@@ -96,6 +97,7 @@ fn printUsage(io: Io) !void {
         \\    list [--all]              List backlog items
         \\    add <text> [--priority <level>]  Add a backlog item (high/medium/low)
         \\    done <id>                 Mark item done
+        \\    toggle <id>               Toggle a task checkbox (checked <-> unchecked)
         \\    reorder <id> [id...]      Move items to top in order
         \\    prioritise <id> <pos>     Move item to specific position
         \\  daily <subcommand>          Manage daily notes
@@ -112,7 +114,8 @@ fn printUsage(io: Io) !void {
         \\    create <title>            Create a new ADR (auto-numbered)
         \\    list                      List all ADRs
         \\  note <subcommand>           Generic notes
-        \\    create <title> [tags...]  Create a tagged note
+        \\    create <title> [tags...] [--body <text>]
+        \\                          Create a tagged note (body from --body or stdin)
         \\  search <query>              Full-text search across journal
         \\  dashboard                   Cross-project overview
         \\  relocate [path]             Fix moved journal path
@@ -226,7 +229,7 @@ fn cmdInit(allocator: Allocator, io: Io, env: std.process.Environ, args: []const
 
 fn cmdBacklog(allocator: Allocator, io: Io, args: []const []const u8, json_output: bool) !void {
     if (args.len == 0) {
-        try printError(io, "backlog", "missing subcommand (list, add, done)");
+        try printError(io, "backlog", "missing subcommand (list, add, done, toggle, reorder, prioritise)");
         return;
     }
 
@@ -259,6 +262,12 @@ fn cmdBacklog(allocator: Allocator, io: Io, args: []const []const u8, json_outpu
             return;
         }
         try cmdBacklogDone(allocator, io, args[1], json_output);
+    } else if (std.mem.eql(u8, sub, "toggle")) {
+        if (args.len < 2) {
+            try printError(io, "backlog toggle", "missing item ID");
+            return;
+        }
+        try cmdBacklogToggle(allocator, io, args[1], json_output);
     } else if (std.mem.eql(u8, sub, "reorder")) {
         if (args.len < 2) {
             try printError(io, "backlog reorder", "missing item IDs");
@@ -864,6 +873,36 @@ fn cmdRelocate(allocator: Allocator, io: Io, args: []const []const u8, json_outp
 
 // ==================== v0.2 Commands ====================
 
+fn cmdBacklogToggle(allocator: Allocator, io: Io, id_str: []const u8, json_output: bool) !void {
+    const backlog = journalPath(allocator, io, "backlog.md");
+    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, backlog) catch {
+        try printError(io, "backlog toggle", "backlog.md not found.");
+        return;
+    };
+    defer read.deinit();
+
+    const new_content = core.backlog.toggleTask(allocator, read.content, id_str) catch |err| {
+        if (err == error.ItemNotFound) {
+            try printError(io, "backlog toggle", "item not found");
+            return;
+        }
+        return err;
+    };
+    defer allocator.free(new_content);
+
+    try io_mod.writeToDir(Io.Dir.cwd(), io, backlog, new_content, read.mtime);
+
+    var buf: [1024]u8 = undefined;
+    var w = Io.File.writer(.stdout(), io, &buf);
+    const out = &w.interface;
+    if (json_output) {
+        try out.print("{{\"status\":\"ok\",\"id\":\"{s}\"}}\n", .{id_str});
+    } else {
+        try out.print("Toggled task: {s}\n", .{id_str});
+    }
+    try out.flush();
+}
+
 fn cmdBacklogReorder(allocator: Allocator, io: Io, id_list: []const []const u8, json_output: bool) !void {
     const backlog = journalPath(allocator, io, "backlog.md");
     const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, backlog) catch {
@@ -1202,19 +1241,88 @@ fn cmdNote(allocator: Allocator, io: Io, args: []const []const u8, json_output: 
     const sub = args[0];
 
     if (std.mem.eql(u8, sub, "create")) {
-        if (args.len < 2) {
-            try printError(io, "note create", "missing title");
-            return;
+        const parsed = parseNoteCreateArgs(allocator, args[1..]) catch |err| switch (err) {
+            error.MissingTitle => {
+                try printError(io, "note create", "missing title");
+                return;
+            },
+            error.MissingBodyValue => {
+                try printError(io, "note create", "--body requires a value");
+                return;
+            },
+            else => return err,
+        };
+        defer allocator.free(parsed.tags);
+
+        // Body comes from --body, else piped stdin, else the placeholder
+        var stdin_content: ?[]const u8 = null;
+        defer if (stdin_content) |s| allocator.free(s);
+        if (parsed.body == null) {
+            stdin_content = readStdinIfPiped(allocator, io);
         }
-        // Remaining args are tags
-        const tags = if (args.len > 2) args[2..] else null;
-        try cmdNoteCreate(allocator, io, args[1], tags, json_output);
+
+        const body = core.note.resolveBody(parsed.body, stdin_content);
+        try cmdNoteCreate(allocator, io, parsed.title, parsed.tags, body, json_output);
     } else {
         try printError(io, "note", "unknown subcommand");
     }
 }
 
-fn cmdNoteCreate(allocator: Allocator, io: Io, title: []const u8, tags: ?[]const []const u8, json_output: bool) !void {
+const NoteCreateArgs = struct {
+    title: []const u8,
+    tags: []const []const u8,
+    body: ?[]const u8,
+};
+
+/// Parse `note create` arguments: first non-flag arg is the title, remaining
+/// non-flag args are tags. `--body <text>` or `--body=<text>` sets the body.
+fn parseNoteCreateArgs(allocator: Allocator, args: []const []const u8) !NoteCreateArgs {
+    var title: ?[]const u8 = null;
+    var body: ?[]const u8 = null;
+    var tags = std.ArrayList([]const u8).empty;
+    errdefer tags.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--body")) {
+            i += 1;
+            if (i >= args.len) return error.MissingBodyValue;
+            body = args[i];
+        } else if (std.mem.startsWith(u8, arg, "--body=")) {
+            body = arg["--body=".len..];
+        } else if (title == null) {
+            title = arg;
+        } else {
+            try tags.append(allocator, arg);
+        }
+    }
+
+    return .{
+        .title = title orelse return error.MissingTitle,
+        .tags = try tags.toOwnedSlice(allocator),
+        .body = body,
+    };
+}
+
+/// Read all of stdin when it is piped (not a TTY). Returns null for a TTY or
+/// empty input. Caller owns the returned memory.
+fn readStdinIfPiped(allocator: Allocator, io: Io) ?[]const u8 {
+    const stdin = Io.File.stdin();
+    const is_tty = stdin.isTty(io) catch true;
+    if (is_tty) return null;
+
+    var buf: [8192]u8 = undefined;
+    var reader = stdin.reader(io, &buf);
+    const content = reader.interface.allocRemaining(allocator, .unlimited) catch return null;
+    if (content.len == 0) {
+        allocator.free(content);
+        return null;
+    }
+    return content;
+}
+
+fn cmdNoteCreate(allocator: Allocator, io: Io, title: []const u8, tags: []const []const u8, body: []const u8, json_output: bool) !void {
     const notes_dir = journalPath(allocator, io, "notes");
     io_mod.ensureDir(Io.Dir.cwd(), io, notes_dir) catch {};
 
@@ -1227,9 +1335,9 @@ fn cmdNoteCreate(allocator: Allocator, io: Io, title: []const u8, tags: ?[]const
     const note_content = core.note.build(
         allocator,
         title,
-        tags,
+        if (tags.len > 0) tags else null,
         date_str,
-        "(TODO: write your note here)",
+        body,
     ) catch {
         try printError(io, "note create", "failed to build note");
         return;
@@ -2175,3 +2283,61 @@ fn dispatchTool(allocator: Allocator, io: Io, tool_name: []const u8, args_json: 
 }
 
 // Journal path is now resolved from .devjournal.toml via resolveJournalRoot()
+
+// ==================== TESTS ====================
+
+test "parseNoteCreateArgs title and tags" {
+    const args = [_][]const u8{ "TIL -- x", "til", "zig" };
+    const parsed = try parseNoteCreateArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.tags);
+
+    try testing.expectEqualStrings("TIL -- x", parsed.title);
+    try testing.expectEqual(@as(usize, 2), parsed.tags.len);
+    try testing.expectEqualStrings("til", parsed.tags[0]);
+    try testing.expectEqualStrings("zig", parsed.tags[1]);
+    try testing.expect(parsed.body == null);
+}
+
+test "parseNoteCreateArgs with --body flag" {
+    const args = [_][]const u8{ "TIL -- x", "--body", "Some body text.", "til" };
+    const parsed = try parseNoteCreateArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.tags);
+
+    try testing.expectEqualStrings("TIL -- x", parsed.title);
+    try testing.expectEqualStrings("Some body text.", parsed.body.?);
+    try testing.expectEqual(@as(usize, 1), parsed.tags.len);
+    try testing.expectEqualStrings("til", parsed.tags[0]);
+}
+
+test "parseNoteCreateArgs with --body= form" {
+    const args = [_][]const u8{ "Review -- PR 12", "--body=Findings here." };
+    const parsed = try parseNoteCreateArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.tags);
+
+    try testing.expectEqualStrings("Review -- PR 12", parsed.title);
+    try testing.expectEqualStrings("Findings here.", parsed.body.?);
+    try testing.expectEqual(@as(usize, 0), parsed.tags.len);
+}
+
+test "parseNoteCreateArgs body flag before title" {
+    const args = [_][]const u8{ "--body", "First.", "Debug -- login", "debug" };
+    const parsed = try parseNoteCreateArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.tags);
+
+    try testing.expectEqualStrings("Debug -- login", parsed.title);
+    try testing.expectEqualStrings("First.", parsed.body.?);
+    try testing.expectEqual(@as(usize, 1), parsed.tags.len);
+}
+
+test "parseNoteCreateArgs errors without title" {
+    const args = [_][]const u8{};
+    try testing.expectError(error.MissingTitle, parseNoteCreateArgs(testing.allocator, &args));
+
+    const only_body = [_][]const u8{ "--body", "text" };
+    try testing.expectError(error.MissingTitle, parseNoteCreateArgs(testing.allocator, &only_body));
+}
+
+test "parseNoteCreateArgs errors when --body lacks a value" {
+    const args = [_][]const u8{ "Title", "--body" };
+    try testing.expectError(error.MissingBodyValue, parseNoteCreateArgs(testing.allocator, &args));
+}
