@@ -26,7 +26,7 @@ zig build
 # Binary at ./zig-out/bin/devjournal
 ```
 
-Requires Zig 0.16.0+.
+Requires Zig 0.17.0+.
 
 ## Quick Start
 
