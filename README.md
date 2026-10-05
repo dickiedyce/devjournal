@@ -90,6 +90,11 @@ devjournal dashboard
 
 - `--json` — Output as JSON (for scripting and AI agents)
 - `DEVJOURNAL_JSON=1` — Same as `--json` (environment variable)
+- `--utc` — Timestamps in UTC instead of local time
+- `DEVJOURNAL_UTC=1` — Same as `--utc` (environment variable)
+
+Timestamps (daily entry times, `@done` stamps, note/ADR dates) default to local
+time, honouring `$TZ` and `/etc/localtime`.
 
 ## Shell Alias
 

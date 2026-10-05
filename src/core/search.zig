@@ -119,6 +119,6 @@ test "searchContent finds multiple matches" {
 
 test "indexOfIgnoreCase basic" {
     try testing.expectEqual(@as(?usize, 0), indexOfIgnoreCase("Hello", "hello"));
-    try testing.expectEqual(@as(?usize, 3), indexOfIgnoreCase("say Hello", "hello"));
+    try testing.expectEqual(@as(?usize, 4), indexOfIgnoreCase("say Hello", "hello"));
     try testing.expect(indexOfIgnoreCase("world", "hello") == null);
 }

@@ -8,21 +8,27 @@ const mcp = @import("mcp");
 
 const VERSION = "0.3.0";
 
+/// Seconds east of UTC applied to all timestamps (0 when --utc is given).
+var utc_offset_secs: i64 = 0;
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
 
     const args = try init.minimal.args.toSlice(arena);
 
-    // Check for --json and --mcp global flags
+    // Check for --json, --mcp and --utc global flags
     var json_output = false;
     var mcp_mode = false;
+    var utc_mode = false;
     var filtered_args = std.ArrayList([]const u8).empty;
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--json")) {
             json_output = true;
         } else if (std.mem.eql(u8, arg, "--mcp")) {
             mcp_mode = true;
+        } else if (std.mem.eql(u8, arg, "--utc")) {
+            utc_mode = true;
         } else {
             try filtered_args.append(arena, arg);
         }
@@ -39,6 +45,16 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true")) {
             json_output = true;
         }
+    }
+
+    // Timestamps default to local time; --utc or DEVJOURNAL_UTC=1 forces UTC.
+    if (init.minimal.environ.getPosix("DEVJOURNAL_UTC")) |val| {
+        if (std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true")) {
+            utc_mode = true;
+        }
+    }
+    if (!utc_mode) {
+        utc_offset_secs = resolveLocalUtcOffset(arena, io, init.minimal.environ) orelse 0;
     }
 
     const cmd_args = filtered_args.items;
@@ -124,7 +140,9 @@ fn printUsage(io: Io) !void {
         \\
         \\Global options:
         \\  --json                      Output as JSON
+        \\  --utc                       Timestamps in UTC instead of local time
         \\  DEVJOURNAL_JSON=1           Same as --json (env var)
+        \\  DEVJOURNAL_UTC=1            Same as --utc (env var)
         \\
     , .{});
     try out.flush();
@@ -367,7 +385,7 @@ fn cmdBacklogList(allocator: Allocator, io: Io, args: []const []const u8, json_o
 
 fn todayDate(io: Io) core.ids.Id.Date {
     const now = Io.Timestamp.now(io, .real);
-    const secs: u64 = @intCast(now.toSeconds());
+    const secs: u64 = @intCast(now.toSeconds() + utc_offset_secs);
     const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
     const day_seconds = epoch_seconds.getEpochDay().calculateYearDay();
     const month_day = day_seconds.calculateMonthDay();
@@ -380,7 +398,7 @@ fn todayDate(io: Io) core.ids.Id.Date {
 
 fn todayTimeHM(io: Io, allocator: Allocator) ![]const u8 {
     const now = Io.Timestamp.now(io, .real);
-    const secs: u64 = @intCast(now.toSeconds());
+    const secs: u64 = @intCast(now.toSeconds() + utc_offset_secs);
     const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
     const hms = epoch_seconds.getDaySeconds();
     return std.fmt.allocPrint(allocator, "{d:0>2}:{d:0>2}", .{
@@ -391,7 +409,7 @@ fn todayTimeHM(io: Io, allocator: Allocator) ![]const u8 {
 
 fn todayTimestampYYMMDDHHMM(io: Io, allocator: Allocator) ![]const u8 {
     const now = Io.Timestamp.now(io, .real);
-    const secs: u64 = @intCast(now.toSeconds());
+    const secs: u64 = @intCast(now.toSeconds() + utc_offset_secs);
     const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
     const day_seconds = epoch_seconds.getEpochDay().calculateYearDay();
     const month_day = day_seconds.calculateMonthDay();
@@ -411,6 +429,46 @@ fn todayFilename(allocator: Allocator, io: Io) ![]const u8 {
     const date_str = core.daily.formatFilename(date, &date_buf);
     const root = resolveJournalRoot(allocator, io);
     return std.fmt.allocPrint(allocator, "{s}/daily/{s}", .{ root, date_str });
+}
+
+/// Resolve the local UTC offset in seconds. Honours $TZ (a zone name like
+/// "Europe/London" or a POSIX rule like "EST5EDT,M3.2.0,M11.1.0"), falling
+/// back to /etc/localtime. Returns null when no timezone data is available.
+fn resolveLocalUtcOffset(allocator: Allocator, io: Io, env: std.process.Environ) ?i64 {
+    if (env.getPosix("TZ")) |tz_val| {
+        var name = tz_val;
+        if (name.len > 0 and (name[0] == ':' or name[0] == '/')) name = name[1..];
+        if (core.tz.parsePosixRule(name)) |rule| {
+            return rule.offsetAt(Io.Timestamp.now(io, .real).toSeconds());
+        } else |_| {}
+        if (readTzFile(allocator, io, name)) |data| {
+            defer allocator.free(data);
+            if (core.tz.parse(allocator, data)) |tz_val_parsed| {
+                var tz = tz_val_parsed;
+                defer tz.deinit();
+                return tz.offsetAt(Io.Timestamp.now(io, .real).toSeconds());
+            } else |_| {}
+        }
+    }
+    const data = readEtcLocaltime(allocator, io) orelse return null;
+    defer allocator.free(data);
+    var tz = core.tz.parse(allocator, data) catch return null;
+    defer tz.deinit();
+    return tz.offsetAt(Io.Timestamp.now(io, .real).toSeconds());
+}
+
+fn readEtcLocaltime(allocator: Allocator, io: Io) ?[]const u8 {
+    if (io_mod.readFromDir(allocator, Io.Dir.cwd(), io, "/etc/localtime")) |read| {
+        return read.content;
+    } else |_| {}
+    return readTzFile(allocator, io, "UTC");
+}
+
+fn readTzFile(allocator: Allocator, io: Io, name: []const u8) ?[]const u8 {
+    const path = std.fmt.allocPrint(allocator, "/usr/share/zoneinfo/{s}", .{name}) catch return null;
+    defer allocator.free(path);
+    const read = io_mod.readFromDir(allocator, Io.Dir.cwd(), io, path) catch return null;
+    return read.content;
 }
 
 /// Read .devjournal.toml and return the journal root path.
