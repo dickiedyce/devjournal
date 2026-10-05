@@ -151,7 +151,7 @@ pub fn buildItemLine(
     var id_buf: [18]u8 = undefined;
     const id_str = id.format(&id_buf);
 
-    return std.fmt.allocPrint(allocator, "- [ ] {s} {s}", .{ id_str, text });
+    return allocator.print("- [ ] {s} {s}", .{ id_str, text });
 }
 
 /// Build a new backlog item line with priority.
@@ -165,7 +165,7 @@ pub fn buildItemLineWithPriority(
     var id_buf: [18]u8 = undefined;
     const id_str = id.format(&id_buf);
 
-    return std.fmt.allocPrint(allocator, "- [ ] {s} {s} {s}", .{ id_str, text, priority.toTag() });
+    return allocator.print("- [ ] {s} {s} {s}", .{ id_str, text, priority.toTag() });
 }
 
 /// Mark a backlog item as done in the content string.
@@ -212,7 +212,7 @@ pub fn markDone(
                 if (matches and !item.checked) {
                     // Replace this line
                     found = true;
-                    const new_line = std.fmt.allocPrint(allocator, "- [x] {s} @done ({s})", .{
+                    const new_line = allocator.print("- [x] {s} @done ({s})", .{
                         if (item.id) |id| blk: {
                             var id_buf: [18]u8 = undefined;
                             break :blk id.format(&id_buf);
@@ -616,7 +616,7 @@ test "markDone by ID string" {
     var id2_buf: [18]u8 = undefined;
     const id2_str = id2.format(&id2_buf);
 
-    const content = try std.fmt.allocPrint(testing.allocator,
+    const content = try testing.allocator.print(
         \\# Backlog
         \\
         \\- [ ] {s} Implement YAML parser @high
@@ -640,7 +640,7 @@ test "markDone preserves priority" {
     var id_buf: [18]u8 = undefined;
     const id_str = id.format(&id_buf);
 
-    const content = try std.fmt.allocPrint(testing.allocator, "- [ ] {s} Task @high\n- [ ] other", .{id_str});
+    const content = try testing.allocator.print("- [ ] {s} Task @high\n- [ ] other", .{id_str});
     defer testing.allocator.free(content);
 
     const result = try markDone(testing.allocator, content, id_str, "26-08-09 16:00");
@@ -678,7 +678,7 @@ test "toggleTask checks an item" {
     var id_buf: [18]u8 = undefined;
     const id_str = id.format(&id_buf);
 
-    const content = try std.fmt.allocPrint(testing.allocator, "- [ ] {s} My task", .{id_str});
+    const content = try testing.allocator.print("- [ ] {s} My task", .{id_str});
     defer testing.allocator.free(content);
 
     const result = try toggleTask(testing.allocator, content, id_str);

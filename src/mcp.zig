@@ -97,25 +97,25 @@ fn serializeValueInner(allocator: Allocator, buf: *std.ArrayList(u8), val: std.j
 /// Build a JSON-RPC success response string.
 pub fn buildResponse(allocator: Allocator, id: ?i64, result_json: []const u8) ![]const u8 {
     if (id) |i| {
-        return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{s}}}", .{ i, result_json });
+        return allocator.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{s}}}", .{ i, result_json });
     }
-    return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":null,\"result\":{s}}}", .{result_json});
+    return allocator.print("{{\"jsonrpc\":\"2.0\",\"id\":null,\"result\":{s}}}", .{result_json});
 }
 
 /// Build a JSON-RPC error response string.
 pub fn buildErrorResponse(allocator: Allocator, id: ?i64, code: i32, message: []const u8) ![]const u8 {
     if (id) |i| {
-        return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"error\":{{\"code\":{d},\"message\":\"{s}\"}}}}", .{ i, code, message });
+        return allocator.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"error\":{{\"code\":{d},\"message\":\"{s}\"}}}}", .{ i, code, message });
     }
-    return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{{\"code\":{d},\"message\":\"{s}\"}}}}", .{ code, message });
+    return allocator.print("{{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{{\"code\":{d},\"message\":\"{s}\"}}}}", .{ code, message });
 }
 
 /// Build a tools/call result with text content.
 pub fn buildToolResultText(allocator: Allocator, text: []const u8, is_error: bool) ![]const u8 {
     if (is_error) {
-        return std.fmt.allocPrint(allocator, "{{\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}],\"isError\":true}}", .{text});
+        return allocator.print("{{\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}],\"isError\":true}}", .{text});
     }
-    return std.fmt.allocPrint(allocator, "{{\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}]}}", .{text});
+    return allocator.print("{{\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}]}}", .{text});
 }
 
 /// Build a tools/list result JSON string.
@@ -136,7 +136,7 @@ pub fn buildToolsList(allocator: Allocator, tools: []const Tool) ![]const u8 {
 
 /// Build an initialize result JSON string.
 pub fn buildInitializeResult(allocator: Allocator) ![]const u8 {
-    return std.fmt.allocPrint(allocator,
+    return allocator.print(
         \\{{"protocolVersion":"2024-11-05","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"devjournal-mcp","version":"0.3.0"}}}}
     , .{});
 }

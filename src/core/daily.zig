@@ -19,13 +19,13 @@ pub fn formatFilename(date: ids.Id.Date, buf: *[14]u8) []const u8 {
 /// Build an entry line for appending to a daily note.
 /// Returns: `- HH:MM -- text\n`
 pub fn buildEntry(allocator: Allocator, timestamp: []const u8, text: []const u8) Allocator.Error![]const u8 {
-    return std.fmt.allocPrint(allocator, "- {s} -- {s}\n", .{ timestamp, text });
+    return allocator.print("- {s} -- {s}\n", .{ timestamp, text });
 }
 
 /// Build a section header for a daily note.
 /// Returns: `## Project -- topic\n`
 pub fn buildSection(allocator: Allocator, project: []const u8, topic: []const u8) Allocator.Error![]const u8 {
-    return std.fmt.allocPrint(allocator, "## {s} -- {s}\n\n", .{ project, topic });
+    return allocator.print("## {s} -- {s}\n\n", .{ project, topic });
 }
 
 /// Build a session start block for a daily note.
@@ -37,7 +37,7 @@ pub fn buildSection(allocator: Allocator, project: []const u8, topic: []const u8
 /// - Goal: description
 /// ```
 pub fn buildSessionStart(allocator: Allocator, project: []const u8, topic: []const u8, time: []const u8, goal: []const u8) Allocator.Error![]const u8 {
-    return std.fmt.allocPrint(allocator,
+    return allocator.print(
         \\## {s} -- {s}
         \\
         \\- Started: {s}
@@ -172,14 +172,14 @@ pub fn prependContent(allocator: Allocator, content: []const u8, new_content: []
     const frontmatter = @import("frontmatter.zig");
     if (frontmatter.extract(content)) |ext| {
         // Rebuild: frontmatter + new_content + original body
-        return std.fmt.allocPrint(allocator, "---\n{s}\n---\n\n{s}{s}", .{
+        return allocator.print("---\n{s}\n---\n\n{s}{s}", .{
             ext.frontmatter_raw,
             new_content,
             ext.body,
         });
     }
     // No frontmatter, prepend directly
-    return std.fmt.allocPrint(allocator, "{s}{s}", .{ new_content, content });
+    return allocator.print("{s}{s}", .{ new_content, content });
 }
 
 test "prependContent with frontmatter inserts after ---" {

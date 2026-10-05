@@ -60,7 +60,7 @@ pub fn parseFrontmatter(allocator: Allocator, input: []const u8) !?yaml.ParseRes
 pub fn build(allocator: Allocator, frontmatter_text: ?[]const u8, body: []const u8) Allocator.Error![]const u8 {
     if (frontmatter_text) |fm| {
         if (fm.len > 0) {
-            return std.fmt.allocPrint(allocator, "---\n{s}\n---\n\n{s}", .{ fm, body });
+            return allocator.print("---\n{s}\n---\n\n{s}", .{ fm, body });
         }
     }
     return try allocator.dupe(u8, body);

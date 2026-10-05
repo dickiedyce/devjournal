@@ -319,9 +319,9 @@ pub fn parseGlobal(allocator: Allocator, input: []const u8) GlobalParseError!Glo
 pub fn globalConfigPath(allocator: Allocator, env: std.process.Environ) ?[]const u8 {
     const config_home = env.getPosix("XDG_CONFIG_HOME") orelse {
         const home = env.getPosix("HOME") orelse return null;
-        return std.fmt.allocPrint(allocator, "{s}/.config/devjournal/config.toml", .{home}) catch return null;
+        return allocator.print("{s}/.config/devjournal/config.toml", .{home}) catch return null;
     };
-    return std.fmt.allocPrint(allocator, "{s}/devjournal/config.toml", .{config_home}) catch return null;
+    return allocator.print("{s}/devjournal/config.toml", .{config_home}) catch return null;
 }
 
 // ==================== GLOBAL CONFIG TESTS ====================
