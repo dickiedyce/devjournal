@@ -6,7 +6,7 @@ const core = @import("core");
 const io_mod = @import("io");
 const mcp = @import("mcp");
 
-const VERSION = "0.3.0";
+const VERSION = "0.5.0";
 
 /// Seconds east of UTC applied to all timestamps (0 when --utc is given).
 var utc_offset_secs: i64 = 0;

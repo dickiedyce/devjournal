@@ -137,7 +137,7 @@ pub fn buildToolsList(allocator: Allocator, tools: []const Tool) ![]const u8 {
 /// Build an initialize result JSON string.
 pub fn buildInitializeResult(allocator: Allocator) ![]const u8 {
     return allocator.print(
-        \\{{"protocolVersion":"2024-11-05","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"devjournal-mcp","version":"0.3.0"}}}}
+        \\{{"protocolVersion":"2024-11-05","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"devjournal-mcp","version":"0.5.0"}}}}
     , .{});
 }
 
