@@ -235,7 +235,9 @@ fn cmdInit(allocator: Allocator, io: Io, env: std.process.Environ, args: []const
     var w = Io.File.writer(.stdout(), io, &buf);
     const out = &w.interface;
     if (json_output) {
-        try out.print("{{\"status\":\"ok\",\"journal\":\"{s}\",\"project\":\"{s}\"}}\n", .{ journal_path, project_name });
+        const journal_json = try mcp.quoteString(allocator, journal_path);
+        const project_json = try mcp.quoteString(allocator, project_name);
+        try out.print("{{\"status\":\"ok\",\"journal\":{s},\"project\":{s}}}\n", .{ journal_json, project_json });
     } else {
         try out.print("Initialized journal at {s} (project: {s})\n", .{ journal_path, project_name });
         if (used_vault_root) {
@@ -336,30 +338,38 @@ fn cmdBacklogList(allocator: Allocator, io: Io, args: []const []const u8, json_o
                 var id_buf: [18]u8 = undefined;
                 const id_str = id.format(&id_buf);
                 if (item.priority) |p| {
-                    try out.print("{{\"id\":\"{s}\",\"checked\":{s},\"text\":\"{s}\",\"priority\":\"{s}\"}}", .{
-                        id_str,
+                    const text_json = try mcp.quoteString(allocator, item.text);
+                    const id_json = try mcp.quoteString(allocator, id_str);
+                    const prio_json = try mcp.quoteString(allocator, p.toTag());
+                    try out.print("{{\"id\":{s},\"checked\":{s},\"text\":{s},\"priority\":{s}}}", .{
+                        id_json,
                         if (item.checked) "true" else "false",
-                        item.text,
-                        p.toTag(),
+                        text_json,
+                        prio_json,
                     });
                 } else {
-                    try out.print("{{\"id\":\"{s}\",\"checked\":{s},\"text\":\"{s}\"}}", .{
-                        id_str,
+                    const text_json = try mcp.quoteString(allocator, item.text);
+                    const id_json = try mcp.quoteString(allocator, id_str);
+                    try out.print("{{\"id\":{s},\"checked\":{s},\"text\":{s}}}", .{
+                        id_json,
                         if (item.checked) "true" else "false",
-                        item.text,
+                        text_json,
                     });
                 }
             } else {
                 if (item.priority) |p| {
-                    try out.print("{{\"checked\":{s},\"text\":\"{s}\",\"priority\":\"{s}\"}}", .{
+                    const text_json = try mcp.quoteString(allocator, item.text);
+                    const prio_json = try mcp.quoteString(allocator, p.toTag());
+                    try out.print("{{\"checked\":{s},\"text\":{s},\"priority\":{s}}}", .{
                         if (item.checked) "true" else "false",
-                        item.text,
-                        p.toTag(),
+                        text_json,
+                        prio_json,
                     });
                 } else {
-                    try out.print("{{\"checked\":{s},\"text\":\"{s}\"}}", .{
+                    const text_json = try mcp.quoteString(allocator, item.text);
+                    try out.print("{{\"checked\":{s},\"text\":{s}}}", .{
                         if (item.checked) "true" else "false",
-                        item.text,
+                        text_json,
                     });
                 }
             }
@@ -532,7 +542,8 @@ fn cmdBacklogAdd(allocator: Allocator, io: Io, text: []const u8, priority: ?core
     var w = Io.File.writer(.stdout(), io, &buf);
     const out = &w.interface;
     if (json_output) {
-        try out.print("{{\"status\":\"ok\",\"item\":\"{s}\"}}\n", .{line});
+        const line_json = try mcp.quoteString(allocator, line);
+        try out.print("{{\"status\":\"ok\",\"item\":{s}}}\n", .{line_json});
     } else {
         try out.print("Added: {s}\n", .{line});
     }
@@ -592,7 +603,8 @@ fn cmdBacklogDone(allocator: Allocator, io: Io, id_str: []const u8, json_output:
     var w = Io.File.writer(.stdout(), io, &buf);
     const out = &w.interface;
     if (json_output) {
-        try out.print("{{\"status\":\"ok\",\"id\":\"{s}\"}}\n", .{id_str});
+        const id_json = try mcp.quoteString(allocator, id_str);
+        try out.print("{{\"status\":\"ok\",\"id\":{s}}}\n", .{id_json});
     } else {
         try out.print("Marked done: {s}\n", .{id_str});
     }
@@ -635,7 +647,8 @@ fn cmdDailyShow(allocator: Allocator, io: Io, json_output: bool) !void {
         var w = Io.File.writer(.stdout(), io, &buf);
         const out = &w.interface;
         if (json_output) {
-            try out.print("{{\"status\":\"empty\",\"path\":\"{s}\"}}\n", .{path});
+            const path_json = try mcp.quoteString(allocator, path);
+            try out.print("{{\"status\":\"empty\",\"path\":{s}}}\n", .{path_json});
         } else {
             try out.print("No daily note for today ({s})\n", .{path});
         }
@@ -648,7 +661,8 @@ fn cmdDailyShow(allocator: Allocator, io: Io, json_output: bool) !void {
     var w = Io.File.writer(.stdout(), io, &buf);
     const out = &w.interface;
     if (json_output) {
-        try out.print("{{\"status\":\"ok\",\"content\":\"{s}\"}}\n", .{read.content});
+        const content_json = try mcp.quoteString(allocator, read.content);
+        try out.print("{{\"status\":\"ok\",\"content\":{s}}}\n", .{content_json});
     } else {
         try out.writeAll(read.content);
     }
@@ -691,7 +705,8 @@ fn cmdDailyAppend(allocator: Allocator, io: Io, text: []const u8, json_output: b
     var w = Io.File.writer(.stdout(), io, &buf);
     const out = &w.interface;
     if (json_output) {
-        try out.print("{{\"status\":\"ok\",\"entry\":\"{s}\"}}\n", .{entry});
+        const entry_json = try mcp.quoteString(allocator, entry);
+        try out.print("{{\"status\":\"ok\",\"entry\":{s}}}\n", .{entry_json});
     } else {
         try out.print("Appended: {s}", .{entry});
     }
@@ -760,7 +775,8 @@ fn cmdSessionCreate(allocator: Allocator, io: Io, topic: []const u8, json_output
     var w = Io.File.writer(.stdout(), io, &buf);
     const out = &w.interface;
     if (json_output) {
-        try out.print("{{\"status\":\"ok\",\"path\":\"{s}\",\"entries\":{d}}}\n", .{ full_path, entries.len });
+        const path_json = try mcp.quoteString(allocator, full_path);
+        try out.print("{{\"status\":\"ok\",\"path\":{s},\"entries\":{d}}}\n", .{ path_json, entries.len });
     } else {
         try out.print("Created session note: {s} ({d} entries)\n", .{ full_path, entries.len });
     }
@@ -804,9 +820,12 @@ fn cmdProjectOverview(allocator: Allocator, io: Io, json_output: bool) !void {
     var w = Io.File.writer(.stdout(), io, &buf);
     const out = &w.interface;
     if (json_output) {
-        try out.print("{{\"name\":\"{s}\",\"status\":\"{s}\"", .{ info.name, info.status });
+        const name_json = try mcp.quoteString(allocator, info.name);
+        const status_json = try mcp.quoteString(allocator, info.status);
+        try out.print("{{\"name\":{s},\"status\":{s}", .{ name_json, status_json });
         if (info.repo) |r| {
-            try out.print(",\"repo\":\"{s}\"", .{r});
+            const repo_json = try mcp.quoteString(allocator, r);
+            try out.print(",\"repo\":{s}", .{repo_json});
         }
         try out.print("}}\n", .{});
     } else {
@@ -922,7 +941,8 @@ fn cmdRelocate(allocator: Allocator, io: Io, args: []const []const u8, json_outp
     var w = Io.File.writer(.stdout(), io, &buf);
     const out = &w.interface;
     if (json_output) {
-        try out.print("{{\"status\":\"ok\",\"journal\":\"{s}\"}}\n", .{new_path});
+        const new_path_json = try mcp.quoteString(allocator, new_path);
+        try out.print("{{\"status\":\"ok\",\"journal\":{s}}}\n", .{new_path_json});
     } else {
         try out.print("Journal path updated to: {s}\n", .{new_path});
     }
@@ -954,7 +974,8 @@ fn cmdBacklogToggle(allocator: Allocator, io: Io, id_str: []const u8, json_outpu
     var w = Io.File.writer(.stdout(), io, &buf);
     const out = &w.interface;
     if (json_output) {
-        try out.print("{{\"status\":\"ok\",\"id\":\"{s}\"}}\n", .{id_str});
+        const id_json = try mcp.quoteString(allocator, id_str);
+        try out.print("{{\"status\":\"ok\",\"id\":{s}}}\n", .{id_json});
     } else {
         try out.print("Toggled task: {s}\n", .{id_str});
     }
@@ -1011,7 +1032,8 @@ fn cmdBacklogPrioritise(allocator: Allocator, io: Io, id_str: []const u8, positi
     var w = Io.File.writer(.stdout(), io, &buf);
     const out = &w.interface;
     if (json_output) {
-        try out.print("{{\"status\":\"ok\",\"id\":\"{s}\",\"position\":{d}}}\n", .{ id_str, position });
+        const id_json = try mcp.quoteString(allocator, id_str);
+        try out.print("{{\"status\":\"ok\",\"id\":{s},\"position\":{d}}}\n", .{ id_json, position });
     } else {
         try out.print("Moved {s} to position {d}\n", .{ id_str, position });
     }
@@ -1049,7 +1071,8 @@ fn cmdDailyPrepend(allocator: Allocator, io: Io, text: []const u8, json_output: 
     var w = Io.File.writer(.stdout(), io, &buf);
     const out = &w.interface;
     if (json_output) {
-        try out.print("{{\"status\":\"ok\",\"entry\":\"{s}\"}}\n", .{entry});
+        const entry_json = try mcp.quoteString(allocator, entry);
+        try out.print("{{\"status\":\"ok\",\"entry\":{s}}}\n", .{entry_json});
     } else {
         try out.print("Prepended: {s}", .{entry});
     }
@@ -1095,7 +1118,9 @@ fn cmdSessionList(allocator: Allocator, io: Io, json_output: bool) !void {
         try out.writeAll("[");
         for (summaries, 0..) |s, i| {
             if (i > 0) try out.writeAll(",");
-            try out.print("{{\"date\":\"{s}\",\"topic\":\"{s}\"}}", .{ s.date, s.topic });
+            const date_json = try mcp.quoteString(allocator, s.date);
+            const topic_json = try mcp.quoteString(allocator, s.topic);
+            try out.print("{{\"date\":{s},\"topic\":{s}}}", .{ date_json, topic_json });
         }
         try out.writeAll("]\n");
     } else {
@@ -1231,7 +1256,8 @@ fn cmdAdrCreate(allocator: Allocator, io: Io, title: []const u8, json_output: bo
     var w = Io.File.writer(.stdout(), io, &buf);
     const out = &w.interface;
     if (json_output) {
-        try out.print("{{\"status\":\"ok\",\"number\":{d},\"path\":\"{s}\"}}\n", .{ next_num, full_path });
+        const path_json = try mcp.quoteString(allocator, full_path);
+        try out.print("{{\"status\":\"ok\",\"number\":{d},\"path\":{s}}}\n", .{ next_num, path_json });
     } else {
         try out.print("Created ADR-{d:0>3}: {s}\n", .{ next_num, title });
     }
@@ -1275,7 +1301,8 @@ fn cmdAdrList(allocator: Allocator, io: Io, json_output: bool) !void {
         try out.writeAll("[");
         for (filenames.items, 0..) |f, i| {
             if (i > 0) try out.writeAll(",");
-            try out.print("\"{s}\"", .{f});
+            const f_json = try mcp.quoteString(allocator, f);
+            try out.print("{s}", .{f_json});
         }
         try out.writeAll("]\n");
     } else {
@@ -1418,7 +1445,8 @@ fn cmdNoteCreate(allocator: Allocator, io: Io, title: []const u8, tags: []const 
     var w = Io.File.writer(.stdout(), io, &buf);
     const out = &w.interface;
     if (json_output) {
-        try out.print("{{\"status\":\"ok\",\"path\":\"{s}\"}}\n", .{full_path});
+        const path_json = try mcp.quoteString(allocator, full_path);
+        try out.print("{{\"status\":\"ok\",\"path\":{s}}}\n", .{path_json});
     } else {
         try out.print("Created: {s}\n", .{full_path});
     }
@@ -1454,7 +1482,9 @@ fn cmdSearch(allocator: Allocator, io: Io, args: []const []const u8, json_output
         try out.writeAll("[");
         for (all_matches.items, 0..) |m, i| {
             if (i > 0) try out.writeAll(",");
-            try out.print("{{\"file\":\"{s}\",\"line\":{d},\"text\":\"{s}\"}}", .{ m.file, m.line_number, m.line });
+            const file_json = try mcp.quoteString(allocator, m.file);
+            const text_json = try mcp.quoteString(allocator, m.line);
+            try out.print("{{\"file\":{s},\"line\":{d},\"text\":{s}}}", .{ file_json, m.line_number, text_json });
         }
         try out.writeAll("]\n");
     } else {

@@ -42,6 +42,47 @@ pub fn parseRequest(allocator: Allocator, line: []const u8) !Request {
     };
 }
 
+/// Escape a string for inclusion inside a JSON string literal (without surrounding quotes).
+/// Caller owns the returned memory.
+pub fn escapeString(allocator: Allocator, s: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    try escapeStringInner(allocator, &buf, s);
+    return try buf.toOwnedSlice(allocator);
+}
+
+/// Escape a string as a full JSON string literal (with surrounding quotes).
+/// Caller owns the returned memory.
+pub fn quoteString(allocator: Allocator, s: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    try buf.append(allocator, '"');
+    try escapeStringInner(allocator, &buf, s);
+    try buf.append(allocator, '"');
+    return try buf.toOwnedSlice(allocator);
+}
+
+fn escapeStringInner(allocator: Allocator, buf: *std.ArrayList(u8), s: []const u8) !void {
+    for (s) |c| {
+        switch (c) {
+            '"' => try buf.appendSlice(allocator, "\\\""),
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            '\t' => try buf.appendSlice(allocator, "\\t"),
+            0x08 => try buf.appendSlice(allocator, "\\b"),
+            0x0C => try buf.appendSlice(allocator, "\\f"),
+            else => {
+                if (c < 0x20) {
+                    try buf.print(allocator, "\\u{x:0>4}", .{c});
+                } else {
+                    try buf.append(allocator, c);
+                }
+            },
+        }
+    }
+}
+
 /// Serialize a std.json.Value to a JSON string. Caller owns memory.
 pub fn serializeValue(allocator: Allocator, val: std.json.Value) ![]const u8 {
     var buf = std.ArrayList(u8).empty;
@@ -58,16 +99,7 @@ fn serializeValueInner(allocator: Allocator, buf: *std.ArrayList(u8), val: std.j
         .float => |f| try buf.print(allocator, "{d}", .{f}),
         .string => |s| {
             try buf.append(allocator, '"');
-            for (s) |c| {
-                switch (c) {
-                    '"' => try buf.appendSlice(allocator, "\\\""),
-                    '\\' => try buf.appendSlice(allocator, "\\\\"),
-                    '\n' => try buf.appendSlice(allocator, "\\n"),
-                    '\r' => try buf.appendSlice(allocator, "\\r"),
-                    '\t' => try buf.appendSlice(allocator, "\\t"),
-                    else => try buf.append(allocator, c),
-                }
-            }
+            try escapeStringInner(allocator, buf, s);
             try buf.append(allocator, '"');
         },
         .number_string => |s| try buf.appendSlice(allocator, s),
@@ -86,7 +118,9 @@ fn serializeValueInner(allocator: Allocator, buf: *std.ArrayList(u8), val: std.j
             while (iter.next()) |entry| {
                 if (!first) try buf.append(allocator, ',');
                 first = false;
-                try buf.print(allocator, "\"{s}\":", .{entry.key_ptr.*});
+                try buf.append(allocator, '"');
+                try escapeStringInner(allocator, buf, entry.key_ptr.*);
+                try buf.appendSlice(allocator, "\":");
                 try serializeValueInner(allocator, buf, entry.value_ptr.*);
             }
             try buf.append(allocator, '}');
@@ -104,18 +138,22 @@ pub fn buildResponse(allocator: Allocator, id: ?i64, result_json: []const u8) ![
 
 /// Build a JSON-RPC error response string.
 pub fn buildErrorResponse(allocator: Allocator, id: ?i64, code: i32, message: []const u8) ![]const u8 {
+    const msg = try quoteString(allocator, message);
+    defer allocator.free(msg);
     if (id) |i| {
-        return allocator.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"error\":{{\"code\":{d},\"message\":\"{s}\"}}}}", .{ i, code, message });
+        return allocator.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"error\":{{\"code\":{d},\"message\":{s}}}}}", .{ i, code, msg });
     }
-    return allocator.print("{{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{{\"code\":{d},\"message\":\"{s}\"}}}}", .{ code, message });
+    return allocator.print("{{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{{\"code\":{d},\"message\":{s}}}}}", .{ code, msg });
 }
 
 /// Build a tools/call result with text content.
 pub fn buildToolResultText(allocator: Allocator, text: []const u8, is_error: bool) ![]const u8 {
+    const quoted = try quoteString(allocator, text);
+    defer allocator.free(quoted);
     if (is_error) {
-        return allocator.print("{{\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}],\"isError\":true}}", .{text});
+        return allocator.print("{{\"content\":[{{\"type\":\"text\",\"text\":{s}}}],\"isError\":true}}", .{quoted});
     }
-    return allocator.print("{{\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}]}}", .{text});
+    return allocator.print("{{\"content\":[{{\"type\":\"text\",\"text\":{s}}}]}}", .{quoted});
 }
 
 /// Build a tools/list result JSON string.
@@ -126,8 +164,12 @@ pub fn buildToolsList(allocator: Allocator, tools: []const Tool) ![]const u8 {
     try buf.appendSlice(allocator, "{\"tools\":[");
     for (tools, 0..) |tool, i| {
         if (i > 0) try buf.append(allocator, ',');
-        try buf.print(allocator, "{{\"name\":\"{s}\",\"description\":\"{s}\",\"inputSchema\":{s}}}", .{
-            tool.name, tool.description, tool.input_schema_json,
+        const name = try quoteString(allocator, tool.name);
+        defer allocator.free(name);
+        const desc = try quoteString(allocator, tool.description);
+        defer allocator.free(desc);
+        try buf.print(allocator, "{{\"name\":{s},\"description\":{s},\"inputSchema\":{s}}}", .{
+            name, desc, tool.input_schema_json,
         });
     }
     try buf.appendSlice(allocator, "]}");
@@ -277,6 +319,45 @@ test "extractString returns null for missing field" {
     const params = "{\"name\":\"hello\"}";
     const val = try extractString(testing.allocator, params, "missing");
     try testing.expect(val == null);
+}
+
+test "escapeString encodes newlines and quotes" {
+    const esc = try escapeString(testing.allocator, "line one\nline \"two\" \\ end\t\r");
+    defer testing.allocator.free(esc);
+    try testing.expectEqualStrings("line one\\nline \\\"two\\\" \\\\ end\\t\\r", esc);
+}
+
+test "escapeString encodes control characters as unicode escapes" {
+    const esc = try escapeString(testing.allocator, "a\x01b");
+    defer testing.allocator.free(esc);
+    try testing.expectEqualStrings("a\\u0001b", esc);
+}
+
+test "quoteString wraps in quotes" {
+    const q = try quoteString(testing.allocator, "x\ny");
+    defer testing.allocator.free(q);
+    try testing.expectEqualStrings("\"x\\ny\"", q);
+}
+
+test "buildToolResultText escapes newlines" {
+    const result = try buildToolResultText(testing.allocator, "line one\nline two", false);
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("{\"content\":[{\"type\":\"text\",\"text\":\"line one\\nline two\"}]}", result);
+}
+
+test "buildErrorResponse escapes message" {
+    const resp = try buildErrorResponse(testing.allocator, 1, -32603, "bad \"thing\"\nhere");
+    defer testing.allocator.free(resp);
+    try testing.expect(std.mem.indexOf(u8, resp, "bad \\\"thing\\\"\\nhere") != null);
+}
+
+test "serializeValue escapes embedded newline strings" {
+    var obj = std.json.ObjectMap.empty;
+    defer obj.deinit(testing.allocator);
+    try obj.put(testing.allocator, "k", .{ .string = "a\nb" });
+    const s = try serializeValue(testing.allocator, .{ .object = obj });
+    defer testing.allocator.free(s);
+    try testing.expectEqualStrings("{\"k\":\"a\\nb\"}", s);
 }
 
 test "extractStringArray from params" {
